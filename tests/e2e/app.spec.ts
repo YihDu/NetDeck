@@ -129,7 +129,7 @@ test("Mock native contract: empty Tailscale, profile CRUD, diagnose, details, co
   await expect(page.getByText("让你的连接有一个家")).toBeVisible();
 });
 
-test("cancellation preserves partial results and historical import stays disabled", async ({
+test("cancellation preserves partial results and explains historical import consent", async ({
   page,
 }) => {
   await page.addInitScript(
