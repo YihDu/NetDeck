@@ -1,0 +1,7 @@
+{
+ "capturedAt":"2026-10-21T00:00:00Z","osVersion":"Mock 26.0","arch":"arm64",
+ "defaultRoute":{"interface":"en0","gateway":"192.0.2.1"},
+ "systemProxy":{"endpoints":[],"pacEnabled":false,"pacUrl":null,"bypass":[]},
+ "shellProxy":{},"listeners":[],"tailscale":null,"sshAliases":[],
+ "evidence":[{"check":"tailscale","status":"unknown","source":"mock","summary":"Mock：未找到 Tailscale CLI","detail":"测试夹具，不是实时采集","checkedAt":"2026-10-21T00:00:00Z","latencyMs":1,"errorCode":"not-installed"}]
+}

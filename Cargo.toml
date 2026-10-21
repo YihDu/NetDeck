@@ -1,0 +1,9 @@
+[workspace]
+members = ["crates/netdeck-core", "crates/netdeck-cli", "src-tauri"]
+resolver = "2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

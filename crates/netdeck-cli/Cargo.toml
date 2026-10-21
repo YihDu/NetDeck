@@ -1,0 +1,12 @@
+[package]
+name = "netdeck-cli"
+version = "0.1.0"
+edition = "2024"
+[[bin]]
+name = "netdeck"
+path = "src/main.rs"
+[dependencies]
+netdeck-core = { path = "../netdeck-core" }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }

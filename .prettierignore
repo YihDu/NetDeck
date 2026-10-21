@@ -1,0 +1,6 @@
+.tooling
+node_modules
+target
+dist
+src-tauri/gen
+package-lock.json

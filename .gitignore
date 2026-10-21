@@ -1,0 +1,18 @@
+node_modules/
+dist/
+target/
+.tooling/
+.DS_Store
+*.log
+.env*
+!.env.example
+coverage/
+playwright-report/
+test-results/
+runtime/
+src-tauri/gen/
+*.local.json
+# Generated icons for platforms outside this macOS release
+src-tauri/icons/android/
+src-tauri/icons/ios/
+src-tauri/icons/*Logo.png
