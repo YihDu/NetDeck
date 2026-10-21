@@ -1,5 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Config, Diagnostic, Snapshot } from "./types";
+import type {
+  Config,
+  Diagnostic,
+  Snapshot,
+  Operation,
+  Plan,
+  RuntimeItem,
+  Receipt,
+} from "./types";
 export const native =
   typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 async function call<T>(
@@ -13,6 +21,13 @@ async function call<T>(
   return invoke<T>(name, args);
 }
 export const api = {
+  preview: (request: Operation) => call<Plan>("preview_operation", { request }),
+  execute: (planId: string) => call<Receipt>("execute_operation", { planId }),
+  runtime: () => call<RuntimeItem[]>("runtime_status"),
+  operations: () => call<Receipt[]>("operation_history"),
+  services: () => call<string[]>("network_services"),
+  workflow: (workflowId: string) =>
+    call<Diagnostic[]>("run_workflow", { workflowId }),
   snapshot: () => call<Snapshot>("get_network_snapshot"),
   config: () => call<Config>("load_config"),
   save: (config: Config) => call<void>("save_config", { config }),

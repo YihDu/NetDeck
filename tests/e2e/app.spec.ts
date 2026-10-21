@@ -1,65 +1,102 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import fixture from "../fixtures/live-contract.mock.json" with { type: "json" };
-test("browser preview remains read-only and renders all pages", async ({
-  page,
-}) => {
-  await page.goto("/");
-  await expect(page.getByText("原生后端未连接。")).toBeVisible();
-  await expect(page.getByRole("button", { name: /诊断全部/ })).toBeDisabled();
-  await page.screenshot({
-    path: "test-results/overview-preview.png",
-    fullPage: true,
-  });
-  for (const name of [
-    "网络拓扑",
-    "连接管理",
-    "SSH 隧道",
-    "诊断中心",
-    "活动与日志",
-    "设置",
-  ]) {
-    await page.getByRole("button", { name, exact: true }).click();
-    await expect(page.locator("h1")).toBeVisible();
-  }
-  await page.getByRole("button", { name: "浅色", exact: true }).click();
-  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
-});
-test("Mock native contract: empty Tailscale, profile CRUD, diagnose, details, copy and delete", async ({
-  page,
-}) => {
+async function mock(page: Page) {
   await page.addInitScript(
     ({ fixture }) => {
-      const snap = { ...fixture, capturedAt: new Date().toISOString() };
+      const at = () => new Date().toISOString();
       let config = {
-        version: 1,
-        profiles: [] as Record<string, unknown>[],
+        version: 2,
+        profiles: [
+          {
+            id: "proxy",
+            label: "Mock 本地代理",
+            kind: "http-proxy",
+            enabled: true,
+            source: "configured",
+            host: "127.0.0.1",
+            port: 7892,
+            sshAlias: "",
+            testUrl: "https://example.com/",
+            expectedCidr: "",
+          },
+        ],
         preferences: {
           theme: "dark",
           refreshSeconds: 15,
           autoDiagnose: false,
           diagnoseSeconds: 60,
         },
+        controls: {
+          tunnels: [],
+          workflows: [],
+          gatewayProfileId: "proxy",
+          gatewayPort: 18080,
+        },
       };
-      let history: unknown[] = [];
+      const history: unknown[] = [];
+      const receipts: unknown[] = [];
+      let count = 0;
+      let pending: Record<string, unknown> = {};
       Object.assign(window, {
         __TAURI_INTERNALS__: {
-          invoke: async (cmd: string, args: Record<string, unknown>) => {
-            if (cmd === "get_network_snapshot") return snap;
+          invoke: async (cmd: string, args: Record<string, unknown> = {}) => {
             if (cmd === "load_config") return config;
-            if (cmd === "get_history") return history;
             if (cmd === "save_config") {
               config = args.config as typeof config;
+              document.body.dataset.saved = JSON.stringify(config);
               return;
             }
-            if (cmd === "run_diagnostics") {
-              const p = config.profiles[0];
-              const now = new Date().toISOString();
+            if (cmd === "get_network_snapshot")
+              return { ...fixture, capturedAt: at() };
+            if (cmd === "get_history") return history;
+            if (cmd === "runtime_status") return [];
+            if (cmd === "operation_history") return receipts;
+            if (cmd === "network_services") return ["Wi-Fi"];
+            if (cmd === "preview_operation") {
+              pending = args.request as Record<string, unknown>;
+              document.body.dataset.preview = JSON.stringify(pending);
+              return {
+                id: "plan-mock",
+                title: "Mock 操作预览",
+                commands: ["Mock：仅测试确认流程，不运行系统命令"],
+                warnings: ["Mock 影响范围"],
+                rollback: "Mock 恢复操作前设置",
+              };
+            }
+            if (cmd === "execute_operation") {
+              count++;
+              document.body.dataset.executed = String(count);
+              const r = {
+                id: `mock-${count}`,
+                at: at(),
+                title: String(pending.kind),
+                success: true,
+                detail: "Mock 操作已验证",
+                reversible: true,
+              };
+              receipts.push(r);
+              return r;
+            }
+            if (cmd === "run_diagnostics" || cmd === "run_workflow") {
+              document.body.dataset.workflow = String(args.workflowId ?? "");
               const result = {
-                profileId: p.id,
-                label: p.label,
+                profileId: "proxy",
+                profileSignature: JSON.stringify([
+                  "proxy",
+                  "Mock 本地代理",
+                  "http-proxy",
+                  true,
+                  "configured",
+                  "127.0.0.1",
+                  7892,
+                  "",
+                  "https://example.com/",
+                  "",
+                ]),
+                label: "Mock 本地代理",
                 status: "degraded",
-                startedAt: now,
-                finishedAt: now,
+                startedAt: at(),
+                finishedAt: at(),
                 cancelled: false,
                 steps: [
                   {
@@ -67,8 +104,8 @@ test("Mock native contract: empty Tailscale, profile CRUD, diagnose, details, co
                     status: "healthy",
                     source: "mock",
                     summary: "Mock TCP 已连接",
-                    detail: "本步骤为测试夹具",
-                    checkedAt: now,
+                    detail: "测试夹具",
+                    checkedAt: at(),
                     latencyMs: 1,
                     errorCode: null,
                   },
@@ -78,13 +115,13 @@ test("Mock native contract: empty Tailscale, profile CRUD, diagnose, details, co
                     source: "mock",
                     summary: "Mock CONNECT 407",
                     detail: "端口开放不代表代理可用",
-                    checkedAt: now,
-                    latencyMs: 3,
+                    checkedAt: at(),
+                    latencyMs: 1,
                     errorCode: "proxy-auth-required",
                   },
                 ],
               };
-              history = [result];
+              history.unshift(result);
               return [result];
             }
             if (cmd === "copy_report") {
@@ -92,126 +129,154 @@ test("Mock native contract: empty Tailscale, profile CRUD, diagnose, details, co
               return;
             }
             if (cmd === "cancel_diagnostics") return;
-            throw new Error(`Unknown test command ${cmd}`);
+            throw new Error(`Unmocked: ${cmd}`);
           },
         },
       });
     },
     { fixture },
   );
+}
+test("browser mode explains missing backend and workflows, including minimum window", async ({
+  page,
+}) => {
   await page.goto("/");
-  await expect(page.getByText("Mock：未找到 Tailscale CLI")).toBeVisible();
-  await page.getByRole("button", { name: "连接管理", exact: true }).click();
-  await page.getByRole("button", { name: "新增连接", exact: true }).click();
-  await page.getByLabel("连接名称").fill("Mock 本地代理");
-  await page.getByLabel("检测类型").selectOption("http-proxy");
-  await page.getByLabel("主机 / IP").fill("127.0.0.1");
-  await page.getByLabel("端口", { exact: true }).fill("7892");
+  await expect(page.getByText(/原生后端未连接/)).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "检查全部连接" }),
+  ).toBeDisabled();
+  await page.screenshot({
+    path: "test-results/dashboard-browser.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: /让远端 Codex/ }).click();
+  await expect(page.getByText("新建反向隧道", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "预览启动 / 切换" }),
+  ).toBeDisabled();
+  await expect(page.getByText(/Magpie/)).toHaveCount(0);
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.screenshot({
+    path: "test-results/workflow-minimum.png",
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+});
+test("mock native: profile CRUD, layer evidence, theme and report", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.goto("/");
+  await expect(
+    page.locator("table").getByText("Mock 本地代理", { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "添加连接", exact: true }).click();
+  await page.getByLabel("连接名称").fill("Mock API");
+  await page.getByLabel("检测类型").selectOption("https");
   await page.getByLabel("确认目标并启用主动检测").check();
   await page.getByRole("button", { name: "保存连接", exact: true }).click();
   await expect(
-    page.getByRole("heading", { name: "Mock 本地代理" }),
+    page.locator("table").getByText("Mock API", { exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "诊断", exact: true }).click();
-  await expect(page.getByText("Mock CONNECT 407")).toBeVisible();
-  await page.getByText("代理握手", { exact: true }).click();
+  await page.getByRole("button", { name: "检查", exact: true }).first().click();
+  await expect(
+    page.getByRole("dialog").getByText("Mock CONNECT 407"),
+  ).toBeVisible();
+  await page.getByRole("dialog").getByText("代理握手", { exact: true }).click();
   await expect(page.getByText("proxy-auth-required")).toBeVisible();
-  await expect(page.getByText("Mock", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: "复制报告", exact: true }).click();
-  await expect(page.locator("body")).toHaveAttribute("data-copied", "true");
+  await page.getByRole("button", { name: "关闭面板" }).click();
+  await page
+    .locator("tr")
+    .filter({ hasText: "Mock 本地代理" })
+    .getByRole("button", { name: "编辑", exact: true })
+    .click();
+  await page.getByLabel("端口", { exact: true }).fill("7893");
+  await page.getByRole("button", { name: "保存连接", exact: true }).click();
+  await expect(
+    page.locator("tr").filter({ hasText: "Mock 本地代理" }),
+  ).toContainText("未验证");
   await page.screenshot({
-    path: "test-results/diagnostics-mock.png",
+    path: "test-results/dashboard-mock.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: "连接管理", exact: true }).click();
-  await page.getByRole("button", { name: "删除 Mock 本地代理" }).click();
-  await page.getByRole("button", { name: "删除连接", exact: true }).click();
-  await expect(page.getByText("让你的连接有一个家")).toBeVisible();
+  await page.getByRole("button", { name: "配置与记录", exact: true }).click();
+  await page
+    .getByRole("combobox", { name: "主题", exact: true })
+    .selectOption("light");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.getByRole("button", { name: "复制报告", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-copied", "true");
+  await page
+    .locator(".config-row")
+    .filter({ hasText: "Mock API" })
+    .getByRole("button", { name: "删除", exact: true })
+    .click();
+  await expect(
+    page.locator(".config-row").filter({ hasText: "Mock API" }),
+  ).toHaveCount(0);
+  await page.screenshot({
+    path: "test-results/settings-light-mock.png",
+    fullPage: true,
+  });
 });
-
-test("cancellation preserves partial results and explains historical import consent", async ({
+test("preview and cancellation never execute, confirmation executes once and rollback previews", async ({
   page,
 }) => {
-  await page.addInitScript(
-    ({ fixture }) => {
-      const p = {
-        id: "mock-cancel",
-        label: "Mock 取消验证",
-        kind: "tcp",
-        enabled: true,
-        source: "configured",
-        host: "127.0.0.1",
-        port: 9,
-        sshAlias: "",
-        testUrl: "",
-        expectedCidr: "",
-      };
-      const config = {
-        version: 1,
-        profiles: [p],
-        preferences: {
-          theme: "dark",
-          refreshSeconds: 15,
-          autoDiagnose: false,
-          diagnoseSeconds: 60,
-        },
-      };
-      let complete: ((r: unknown) => void) | undefined;
-      Object.assign(window, {
-        __TAURI_INTERNALS__: {
-          invoke: async (cmd: string) => {
-            if (cmd === "get_network_snapshot")
-              return { ...fixture, capturedAt: new Date().toISOString() };
-            if (cmd === "load_config") return config;
-            if (cmd === "get_history") return [];
-            if (cmd === "run_diagnostics")
-              return new Promise((resolve) => {
-                complete = resolve;
-              });
-            if (cmd === "cancel_diagnostics") {
-              const at = new Date().toISOString();
-              complete?.([
-                {
-                  profileId: p.id,
-                  label: p.label,
-                  status: "unknown",
-                  startedAt: at,
-                  finishedAt: at,
-                  cancelled: true,
-                  steps: [
-                    {
-                      check: "tcp",
-                      status: "unknown",
-                      source: "mock",
-                      summary: "Mock：检测已取消",
-                      detail: "保留已完成步骤",
-                      checkedAt: at,
-                      latencyMs: 2,
-                      errorCode: "cancelled",
-                    },
-                  ],
-                },
-              ]);
-              return;
-            }
-            throw new Error(cmd);
-          },
-        },
-      });
-    },
-    { fixture },
-  );
+  await mock(page);
   await page.goto("/");
-  await expect(page.getByRole("button", { name: /诊断全部/ })).toBeEnabled();
-  await page.getByRole("button", { name: /诊断全部/ }).click();
-  await page.getByRole("button", { name: "取消诊断", exact: true }).click();
-  await expect(page.getByText("已取消 · 已完成步骤仍可查看")).toBeVisible();
-  await expect(page.getByText("Mock：检测已取消")).toBeVisible();
-  await page.getByRole("button", { name: "连接管理", exact: true }).click();
-  await page.getByRole("button", { name: "导入历史线索", exact: true }).click();
+  await page.getByRole("button", { name: /日常上网/ }).click();
+  await page.getByRole("button", { name: "预览启动 / 切换" }).click();
   await expect(
-    page.getByText(
-      "这些地址来自历史记录，可能已失效。导入后保持禁用，编辑确认后才能启用。",
-    ),
+    page.getByRole("dialog").getByText("Mock 影响范围"),
   ).toBeVisible();
+  await expect(page.locator("body")).not.toHaveAttribute("data-executed", /./);
+  await page.getByRole("button", { name: "取消，保持现状" }).click();
+  await expect(page.locator("body")).not.toHaveAttribute("data-executed", /./);
+  await page.getByRole("button", { name: "预览启动 / 切换" }).click();
+  await page.screenshot({
+    path: "test-results/confirmation-mock.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "确认执行", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-executed", "1");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "配置与记录", exact: true }).click();
+  await page.getByRole("button", { name: "预览撤销" }).click();
+  await expect(page.locator("body")).toHaveAttribute(
+    "data-preview",
+    /rollback/,
+  );
+  await expect(page.locator("body")).toHaveAttribute("data-executed", "1");
+});
+test("workflow order and tunnel definition persist without connecting", async ({
+  page,
+}) => {
+  await mock(page);
+  await page.goto("/");
+  await page.getByRole("button", { name: /让远端 Codex/ }).click();
+  await page.getByLabel("添加检查步骤").selectOption("proxy");
+  await page.getByRole("button", { name: "保存检查顺序" }).click();
+  await page.getByRole("button", { name: "检查已保存路径" }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-workflow", "remote");
+  await page.getByRole("button", { name: "新增隧道", exact: true }).click();
+  await page.getByLabel("SSH Host 别名", { exact: true }).fill("mock-coder");
+  await page.getByRole("button", { name: "保存定义", exact: true }).click();
+  await expect(page.locator(".tunnel-card")).toContainText(
+    "127.0.0.1:10073 → 127.0.0.1:18080",
+  );
+  await expect(page.locator("body")).not.toHaveAttribute("data-executed", /./);
+  await page.screenshot({
+    path: "test-results/remote-workflow-mock.png",
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "预览启动", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute(
+    "data-preview",
+    /tunnel-start/,
+  );
+  await expect(page.locator("body")).not.toHaveAttribute("data-executed", /./);
 });

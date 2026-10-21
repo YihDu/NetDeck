@@ -35,9 +35,11 @@ export interface Config {
   version: number;
   profiles: Profile[];
   preferences: Preferences;
+  controls: Controls;
 }
 export interface Diagnostic {
   profileId: string;
+  profileSignature?: string;
   label: string;
   status: Health;
   startedAt: string;
@@ -82,7 +84,13 @@ export interface Snapshot {
   evidence: Evidence[];
 }
 export const defaultConfig: Config = {
-  version: 1,
+  version: 2,
+  controls: {
+    tunnels: [],
+    workflows: [],
+    gatewayProfileId: "",
+    gatewayPort: 18080,
+  },
   profiles: [],
   preferences: {
     theme: "dark",
@@ -189,12 +197,83 @@ export const historical: Profile[] = [
     sshAlias: "main.yihang-wm.yihangcs.coder",
     source: "historical",
   },
-  {
-    ...freshProfile(),
-    id: "magpie",
-    label: "Magpie Gateway",
-    host: "127.0.0.1",
-    port: 3425,
-    source: "historical",
-  },
 ];
+
+export interface TunnelDefinition {
+  id: string;
+  label: string;
+  alias: string;
+  direction: "local" | "remote";
+  listenPort: number;
+  targetHost: string;
+  targetPort: number;
+  reuseConfig: boolean;
+}
+export interface Workflow {
+  id: string;
+  label: string;
+  profileIds: string[];
+}
+export interface Controls {
+  tunnels: TunnelDefinition[];
+  workflows: Workflow[];
+  gatewayProfileId: string;
+  gatewayPort: number;
+}
+export type Operation =
+  | ({ kind: "tunnel-start" } & Omit<TunnelDefinition, "label">)
+  | { kind: "tunnel-stop"; id: string }
+  | { kind: "ssh-auth"; alias: string }
+  | { kind: "remote-check"; alias: string; port: number; url: string }
+  | { kind: "gateway-start"; profileId: string; port: number }
+  | { kind: "gateway-stop" }
+  | {
+      kind: "tailscale";
+      setting: "connected" | "accept-routes" | "exit-node";
+      value: string;
+    }
+  | {
+      kind: "system-proxy";
+      service: string;
+      protocol: string;
+      host: string;
+      port: number;
+      enabled: boolean;
+    }
+  | { kind: "rollback"; id: string };
+export interface Plan {
+  id: string;
+  title: string;
+  commands: string[];
+  warnings: string[];
+  rollback: string;
+}
+export interface RuntimeItem {
+  id: string;
+  label: string;
+  status: Health;
+  detail: string;
+  startedAt: string;
+}
+export interface Receipt {
+  id: string;
+  at: string;
+  title: string;
+  success: boolean;
+  detail: string;
+  reversible: boolean;
+}
+
+export const profileSignature = (p: Profile) =>
+  JSON.stringify([
+    p.id,
+    p.label,
+    p.kind,
+    p.enabled,
+    p.source,
+    p.host,
+    p.port,
+    p.sshAlias,
+    p.testUrl,
+    p.expectedCidr,
+  ]);

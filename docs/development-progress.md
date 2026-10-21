@@ -1,3 +1,42 @@
+# NetDeck 0.2 development record — 2026-10-21
+
+User scope: implement controlled networking and a minimal workflow UI; exclude Magpie, Windows remote administration and Transtar internal node switching. Work remains in the independent `Tools/NetDeck` Git repository.
+
+## Delivered in 0.2
+
+- Three-page Chinese UI: dashboard, four workflow guides, configuration/history. Dashboard separates saved configuration, current signed diagnostic results, age, failure evidence and next action.
+- Persisted tunnel definitions and ordered workflow prerequisites. Failed prerequisites block downstream requests. v1 configuration migrates in memory to schema v2; no network action on load/save.
+- Explicit SSH auth, managed -L/-R, reuse-vs-override config strategy, frozen temporary configuration, classified failures, strict host keys, own process-group cleanup. Restart is an explicit stop then start sequence.
+- Loopback stable HTTP/CONNECT gateway with HTTP/SOCKS5 upstream, no direct fallback, bounded connections, validated switching and 60-second upstream checks.
+- Backend-generated single-use previews, expiry, configuration/runtime state checks, system proxy and Tailscale controls, persisted before-snapshots, readback, failure recovery, externally changed state protection, validated rollback data.
+- Separate remote curl egress check and copyable current-Shell proxy instructions. Menu-bar entry, owned connection status tooltip and exit cleanup.
+- Magpie removed from selectable examples and user workflows. Windows may remain a detected network peer, without remote administration.
+
+## Validation performed
+
+| Check | Result |
+| --- | --- |
+| Rust core / CLI tests | 37 passed; no CLI-specific unit tests |
+| Vitest | 8 passed |
+| Chrome Playwright | 4 passed; native IPC mocked and visibly marked Mock |
+| Clippy workspace/all-targets `-D warnings` | Passed |
+| TypeScript / Vite production build | Passed |
+| Apple Silicon Tauri release bundle | Passed; final 0.2 `.app` rebuild completed, 7.51 MiB |
+| CLI release + doctor | Passed; real read-only inventory at 2026-10-21T04:40:00.597Z, aarch64, 128 listeners sampled, 13 SSH aliases, Tailscale Running |
+| Browser screenshot review | Dashboard, remote workflow and minimum-width layout reviewed; dark/light screenshots generated |
+
+The new loopback tests exercise real request/response bytes for HTTP and CONNECT over HTTP and SOCKS5 upstreams, plus fail-closed behavior. Other tests cover one-use/expired previews, stored command validation, forwarding scope, static Match-exec suppression with real `ssh -G`, v1 migration, and prerequisite blocking without downstream connects. Browser tests check preview cancellation, confirmation exactly once, rollback preview, persisted workflows/tunnels, CRUD, report copy, theme, minimum-width overflow and invalidation after endpoint edits.
+
+**Not live-verified:** actual Coder/CCI authentication, remote forwarding and curl, changes to the user's Tailscale/system proxy, their real failure/rollback paths, native WebView/menu visual behavior, Intel, Developer ID signing and notarization. No such network changes were made as development tests. Previous native Computer Use permission was unavailable; no bypass was attempted. These limits are also documented in README and the UI's failure guidance.
+
+The read-only Gemini command worker was attempted again; it returned HTTP 401 without findings. No successful independent Gemini review is claimed. Primary-agent review found and addressed stale endpoint results, post-preview runtime replacement, gateway-switch preservation, unsafe persisted rollback command data, original-forward duplication and owned subprocess cleanup.
+
+Artifacts: `target/release/bundle/macos/NetDeck.app`, `target/release/netdeck`; screenshots under ignored `test-results/`. Personal configuration, local reports, build outputs and toolchain are not committed.
+
+---
+
+# Archived 0.1 record (historical; the open-scope list below is superseded by 0.2)
+
 # Development checkpoint — 2026-10-21
 
 ## Repository and environment

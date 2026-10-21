@@ -21,3 +21,9 @@ A reachable proxy TCP port with failed handshake or egress is **degraded / éƒ¨åˆ
 RemoteForward conflicts are conservative risks. Repeated remote listen ports are flagged; an existing forward is reported before any future manager could append another one. Unix socket forwards are displayed but are not treated as TCP ports. There is no remote port-owner claim.
 
 Tailscale peers marked Online are control-plane metadata, not ping evidence. Published PrimaryRoutes and local accept-routes are displayed separately. Missing prefs capabilities degrade to null/unknown.
+
+## 0.2 controlled-operation additions
+
+The table above describes ordinary read-only Profile diagnostics. Separately confirmed SSH auth verifies an OpenSSH authenticated event, then closes the session. Managed forwarding also waits for OpenSSH to finish initialization under ExitOnForwardFailure; PID existence alone is insufficient. Remote curl is a third, separately confirmed check through the remote loopback proxy.
+
+Ordered workflow checks stop downstream requests on the first non-healthy result and emit an Unknown dependency step. They do not automatically enable Tailscale, change system settings or start every configured tunnel. Profile signatures ensure a previous endpoint's result is not reused for an edited endpoint. Gateway startup requires a full upstream diagnostic, and repeats it every 60 seconds during operation.

@@ -19,12 +19,18 @@ pub fn load() -> Result<Config, String> {
         return Err("配置文件过大".into());
     }
     let text = std::fs::read_to_string(path).map_err(|_| "无法读取配置文件")?;
-    let c: Config = serde_json::from_str(&text).map_err(|_| "配置格式无效，未覆盖原文件")?;
+    decode_config(&text)
+}
+pub fn decode_config(text: &str) -> Result<Config, String> {
+    let mut c: Config = serde_json::from_str(text).map_err(|_| "配置格式无效，未覆盖原文件")?;
+    if c.version == 1 {
+        c.version = 2;
+    }
     validate_config(&c)?;
     Ok(c)
 }
 pub fn validate_config(c: &Config) -> Result<(), String> {
-    if c.version != 1 {
+    if c.version != 2 {
         return Err("不支持的配置版本；请保留原文件并升级应用".into());
     }
     if c.profiles.len() > 64 {
@@ -36,6 +42,41 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
         if !ids.insert(&p.id) {
             return Err("Profile ID 重复".into());
         }
+    }
+    if c.controls.tunnels.len() > 32 || c.controls.workflows.len() > 16 {
+        return Err("隧道 / 场景配置过多".into());
+    }
+    let mut tunnel_ids = std::collections::BTreeSet::new();
+    for t in &c.controls.tunnels {
+        if !crate::safety::valid_alias(&t.id)
+            || !crate::safety::valid_alias(&t.alias)
+            || !crate::safety::valid_host(&t.target_host)
+            || t.target_port == 0
+            || t.listen_port == 0
+            || t.label.len() > 100
+            || !["local", "remote"].contains(&t.direction.as_str())
+            || !tunnel_ids.insert(&t.id)
+        {
+            return Err("隧道配置无效或 ID 重复".into());
+        }
+    }
+    let mut workflow_ids = std::collections::BTreeSet::new();
+    for w in &c.controls.workflows {
+        if !crate::safety::valid_alias(&w.id)
+            || w.label.len() > 100
+            || !workflow_ids.insert(&w.id)
+            || w.profile_ids.len() > 16
+            || w.profile_ids.iter().any(|id| !ids.contains(id))
+        {
+            return Err("场景引用的 Profile 无效或步骤过多".into());
+        }
+        let unique: std::collections::BTreeSet<_> = w.profile_ids.iter().collect();
+        if unique.len() != w.profile_ids.len() {
+            return Err("场景内不能重复检查同一 Profile".into());
+        }
+    }
+    if c.controls.gateway_port < 1024 {
+        return Err("稳定入口端口须为 1024–65535".into());
     }
     if !["dark", "light"].contains(&c.preferences.theme.as_str())
         || !(10..=300).contains(&c.preferences.refresh_seconds)
@@ -95,7 +136,7 @@ pub fn record(results: &[Diagnostic]) -> Result<(), String> {
     Ok(())
 }
 pub fn report(snapshot: Option<&Snapshot>, results: &[Diagnostic]) -> String {
-    let value = serde_json::json!({"application":"NetDeck","reportVersion":1,"generatedAt":now(),"mode":"Live / read-only","snapshot":snapshot,"diagnostics":results,"privacy":"No private keys, credentials, SSH usernames or raw ProxyCommand are included. Network addresses remain for diagnosis."});
+    let value = serde_json::json!({"application":"NetDeck","reportVersion":1,"generatedAt":now(),"mode":"Live diagnostics / confirmed operations","snapshot":snapshot,"diagnostics":results,"privacy":"No private keys, credentials, SSH usernames or raw ProxyCommand are included. Network addresses remain for diagnosis."});
     redact(&serde_json::to_string_pretty(&value).unwrap_or_default())
 }
 #[cfg(test)]
@@ -104,12 +145,20 @@ mod tests {
     #[test]
     fn rejects_future_schema_and_fast_polling() {
         let mut c = Config {
-            version: 2,
+            version: 99,
             ..Config::default()
         };
         assert!(validate_config(&c).is_err());
-        c.version = 1;
+        c.version = 2;
         c.preferences.diagnose_seconds = 1;
         assert!(validate_config(&c).is_err());
+    }
+    #[test]
+    fn v1_migrates_without_network_actions() {
+        let old = serde_json::json!({"version":1,"profiles":[],"preferences":{"theme":"dark","refreshSeconds":15,"autoDiagnose":false,"diagnoseSeconds":60}});
+        let c = decode_config(&old.to_string()).unwrap();
+        assert_eq!(c.version, 2);
+        assert_eq!(c.controls.gateway_port, 18080);
+        assert!(c.controls.tunnels.is_empty());
     }
 }

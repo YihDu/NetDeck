@@ -102,13 +102,16 @@ pub struct Config {
     pub version: u32,
     pub profiles: Vec<Profile>,
     pub preferences: Preferences,
+    #[serde(default)]
+    pub controls: Controls,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             profiles: vec![],
             preferences: Preferences::default(),
+            controls: Controls::default(),
         }
     }
 }
@@ -116,6 +119,8 @@ impl Default for Config {
 #[serde(rename_all = "camelCase")]
 pub struct Diagnostic {
     pub profile_id: String,
+    #[serde(default)]
+    pub profile_signature: String,
     pub label: String,
     pub status: Health,
     pub started_at: String,
@@ -190,4 +195,66 @@ pub struct SshConfig {
     pub remote_forwards: Vec<String>,
     pub identity_count: usize,
     pub duplicate_ports: Vec<u16>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Controls {
+    #[serde(default)]
+    pub tunnels: Vec<TunnelDefinition>,
+    #[serde(default)]
+    pub workflows: Vec<Workflow>,
+    #[serde(default)]
+    pub gateway_profile_id: String,
+    #[serde(default = "default_gateway_port")]
+    pub gateway_port: u16,
+}
+fn default_gateway_port() -> u16 {
+    18080
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TunnelDefinition {
+    pub id: String,
+    pub label: String,
+    pub alias: String,
+    pub direction: String,
+    pub listen_port: u16,
+    pub target_host: String,
+    pub target_port: u16,
+    pub reuse_config: bool,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Workflow {
+    pub id: String,
+    pub label: String,
+    pub profile_ids: Vec<String>,
+}
+
+impl Default for Controls {
+    fn default() -> Self {
+        Self {
+            tunnels: vec![],
+            workflows: vec![],
+            gateway_profile_id: String::new(),
+            gateway_port: 18080,
+        }
+    }
+}
+
+pub fn profile_signature(p: &Profile) -> String {
+    serde_json::json!([
+        p.id,
+        p.label,
+        p.kind,
+        p.enabled,
+        p.source,
+        p.host,
+        p.port,
+        p.ssh_alias,
+        p.test_url,
+        p.expected_cidr
+    ])
+    .to_string()
 }

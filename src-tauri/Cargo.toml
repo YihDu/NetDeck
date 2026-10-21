@@ -1,6 +1,6 @@
 [package]
 name = "netdeck"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2024"
@@ -23,7 +23,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 netdeck-core = { path = "../crates/netdeck-core" }
 tokio = { version = "1", features = ["sync"] }
 serde = { version = "1", features = ["derive"] }

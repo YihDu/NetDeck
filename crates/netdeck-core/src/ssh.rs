@@ -260,6 +260,104 @@ pub fn parse_effective(alias: &str, text: &str) -> Result<SshConfig, Failure> {
     }
     Ok(c)
 }
+/// Freeze configuration for an explicitly confirmed session. Executable Match blocks are
+/// disabled, and config-defined forwarding is stripped when a custom forward is selected.
+pub fn session_config(alias: &str, reuse: bool) -> Result<(tempfile::NamedTempFile, bool), String> {
+    if !valid_alias(alias) {
+        return Err("SSH 别名无效".into());
+    }
+    let raw = read_config(false).map_err(|e| e.message)?;
+    if !parse_aliases(&raw).iter().any(|s| s == alias) {
+        return Err("SSH 别名未发现".into());
+    }
+    let (safe, skipped) = sanitize_session(&raw, reuse)?;
+    let mut file = tempfile::NamedTempFile::new().map_err(|_| "无法创建会话配置")?;
+    file.write_all(safe.as_bytes())
+        .map_err(|_| "无法保存会话配置")?;
+    Ok((file, skipped))
+}
+
+fn sanitize_session(raw: &str, reuse: bool) -> Result<(String, bool), String> {
+    let mut safe = String::new();
+    let mut skipped = false;
+    for line in raw.lines() {
+        let normalized = line.replacen('=', " ", 1);
+        let tokens = shell_words::split(&normalized).map_err(|_| "SSH 配置语法无效")?;
+        let key = tokens
+            .first()
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if key == "match"
+            && tokens
+                .iter()
+                .skip(1)
+                .any(|s| s.trim_start_matches('!').eq_ignore_ascii_case("exec"))
+        {
+            safe.push_str("Match host !*\n");
+            skipped = true;
+            continue;
+        }
+        if reuse && key == "dynamicforward" {
+            return Err("沿用模式暂不支持 DynamicForward；请选择明确覆盖".into());
+        }
+        if !reuse && ["localforward", "remoteforward", "dynamicforward"].contains(&key.as_str()) {
+            continue;
+        }
+        // Disallow local command / multiplexing inherited from the configuration.
+        if [
+            "localcommand",
+            "permitlocalcommand",
+            "controlmaster",
+            "controlpath",
+            "controlpersist",
+            "forkafterauthentication",
+            "sessiontype",
+            "remotecommand",
+            "requesttty",
+        ]
+        .contains(&key.as_str())
+        {
+            continue;
+        }
+        safe.push_str(line);
+        safe.push('\n');
+    }
+    Ok((safe, skipped))
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    #[tokio::test]
+    async fn frozen_config_disables_exec_and_removes_original_forwards() {
+        let raw = "Host test\n HostName example.com\n RemoteForward 10073 localhost:7892\n LocalCommand touch /tmp/never-netdeck\nMatch exec \"false\"\n HostName dangerous.invalid\nHost other\n HostName other.invalid\n";
+        let (safe, skipped) = sanitize_session(raw, false).unwrap();
+        assert!(skipped);
+        assert!(!safe.contains("exec"));
+        assert!(!safe.contains("RemoteForward"));
+        assert!(!safe.contains("LocalCommand"));
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(safe.as_bytes()).unwrap();
+        let output = run(
+            "/usr/bin/ssh",
+            &["-G", "-F", file.path().to_str().unwrap(), "test"],
+            3,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(output.code, 0);
+        assert!(output.stdout.contains("hostname example.com"));
+        assert!(!output.stdout.contains("dangerous.invalid"));
+    }
+    #[test]
+    fn reuse_keeps_one_forward() {
+        let (text, _) =
+            sanitize_session("Host test\nRemoteForward 10073 localhost:7892", true).unwrap();
+        assert_eq!(text.matches("RemoteForward").count(), 1);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

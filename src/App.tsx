@@ -1,1384 +1,1895 @@
-import { useState, useEffect, useRef, useCallback } from "react";
 import {
-  Activity,
-  ArrowDownToLine,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
   ArrowRight,
-  ArrowUpRight,
   Check,
   ChevronRight,
-  CircleHelp,
-  Clock3,
   Copy,
-  GitBranch,
   Globe2,
-  Layers,
   LayoutDashboard,
-  Loader2,
-  Monitor,
-  Moon,
-  Network,
   Plus,
   RefreshCw,
-  Search,
   Settings2,
   Shield,
-  SlidersHorizontal,
-  Square,
-  Sun,
   Terminal,
-  Trash2,
   Waypoints,
-  X,
 } from "lucide-react";
 import { api, native } from "./lib/api";
 import {
+  profileSignature,
   clockTime,
   defaultConfig,
   freshProfile,
+  healthLabels,
   historical,
   isStale,
   kindLabels,
   type Config,
   type Diagnostic,
-  type Evidence,
   type Profile,
   type Snapshot,
-  type Health,
+  type Plan,
+  type Operation,
+  type RuntimeItem,
+  type Receipt,
+  type TunnelDefinition,
+  type Workflow,
 } from "./lib/types";
 import { Button } from "./components/ui/button";
 import { Sheet } from "./components/ui/sheet";
-import { EvidenceList, SourceBadge, Status } from "./components/Status";
-import { NetworkMap } from "./components/NetworkMap";
+import { Status, EvidenceList } from "./components/Status";
 import { ProfileForm } from "./components/ProfileForm";
+const NetworkMap = lazy(() =>
+  import("./components/NetworkMap").then((m) => ({ default: m.NetworkMap })),
+);
 import "./App.css";
 
-type Page =
-  | "overview"
-  | "map"
-  | "connections"
-  | "tunnels"
-  | "diagnostics"
-  | "activity"
-  | "settings";
-const nav = [
-  { id: "overview", label: "总览", en: "Overview", icon: LayoutDashboard },
-  { id: "map", label: "网络拓扑", en: "Network Map", icon: Waypoints },
-  { id: "connections", label: "连接管理", en: "Connections", icon: Layers },
-  { id: "tunnels", label: "SSH 隧道", en: "Tunnels", icon: GitBranch },
-  { id: "diagnostics", label: "诊断中心", en: "Diagnostics", icon: Activity },
-  { id: "activity", label: "活动与日志", en: "Activity", icon: Clock3 },
-  { id: "settings", label: "设置", en: "Settings", icon: Settings2 },
-] as const;
-const pageCopy: Record<Page, [string, string]> = {
-  overview: ["掌握每一条连接。", "本机发现、连接状态与逐跳证据，汇聚在这里。"],
-  map: ["你的网络，一目了然。", "点击设备或链路查看证据。虚线表示尚未验证。"],
-  connections: [
-    "连接你的工作环境。",
-    "显式配置目标，再启用检测。各条连接可以同时存在。",
-  ],
-  tunnels: [
-    "看清每一条 SSH 转发。",
-    "检查有效配置与重复端口风险，保留现有连接的控制权。",
-  ],
-  diagnostics: [
-    "从现象，定位到一跳。",
-    "DNS、路由、TCP、代理与 HTTPS，各层独立报告。",
-  ],
-  activity: [
-    "每次检查，都有迹可循。",
-    "诊断结果仅保存在本机，报告自动移除凭据。",
-  ],
-  settings: ["按你的方式工作。", "调整显示、刷新节奏与检测范围。"],
-};
-function errorText(e: unknown) {
-  return e instanceof Error ? e.message : String(e);
-}
+type Page = "dashboard" | "scenarios" | "settings";
+const scenes = [
+  {
+    id: "daily",
+    title: "日常上网 / 换了 Wi-Fi",
+    icon: Globe2,
+    subtitle: "浏览器能上网，终端或 API 却不通？",
+    steps: [
+      [
+        "确认当前出口",
+        "看系统代理、PAC 与 Shell 代理是否指向同一有效端口。浏览器可用不代表终端沿用系统代理。",
+      ],
+      [
+        "检查代理与 HTTPS",
+        "添加实际 HTTP / SOCKS5 代理并启用检测。TCP → 协议握手 → HTTPS 必须分别通过。",
+      ],
+      [
+        "固定入口，减少改端口",
+        "选择通过检查的上游，启动 127.0.0.1:18080。以后上游变了，只需在这里预览切换。",
+      ],
+      [
+        "按需设置系统或终端",
+        "系统代理在高级控制里逐项预览。终端只复制下面的环境变量到需要使用代理的 Shell。",
+      ],
+    ],
+  },
+  {
+    id: "slai",
+    title: "访问研究院 / SLAI",
+    icon: Shield,
+    subtitle: "先到 Tailscale 节点，再确认目标子网与代理。",
+    steps: [
+      [
+        "连接 Tailscale",
+        "在主面板看本机连接状态；未登录时先到 Tailscale 官方客户端登录。已登录可在下方预览连接。",
+      ],
+      [
+        "检查研究院 Peer",
+        "从发现的节点中选择实际 IP，建立 Tailscale Profile。ping 结果会区分 direct / relay / 不可达。",
+      ],
+      [
+        "确认接受路由与目标网段",
+        "需要子网路由时预览开启 accept-routes。在目标 Profile 填入实际预期 CIDR；网段不包含目标时，开启路由也无法解决。",
+      ],
+      [
+        "检查共享代理再访问 CCI",
+        "把 Peer、共享代理、目标按依赖顺序加入场景检查。上游失败时后续步骤停在“前置未通过”。",
+      ],
+    ],
+  },
+  {
+    id: "ssh",
+    title: "连接 Coder / CCI",
+    icon: Terminal,
+    subtitle: "入口地址、SSH 配置、认证，逐项排查。",
+    steps: [
+      [
+        "选择已有 SSH 别名",
+        "在连接配置中添加 SSH Profile，选择本机发现的别名。动态 CCI 端口变更请先在原 SSH 配置中更正。",
+      ],
+      [
+        "检查连接与生效配置",
+        "普通诊断检查配置、TCP 和重复转发；包含跳板时会明确标记无法用直连结果代表整条路径。",
+      ],
+      [
+        "单独验证 SSH 认证",
+        "点击 SSH 认证并确认。只使用已有密钥 / ssh-agent，不保存密码；新主机指纹须先在终端核验。",
+      ],
+      [
+        "建立需要的转发",
+        "新增隧道，选择沿用 Config 或明确覆盖。本地 -L 用于访问远端服务；远端 -R 用于把 Mac 服务带到服务器。",
+      ],
+    ],
+  },
+  {
+    id: "remote",
+    title: "让远端 Codex / GitHub 使用 Mac 代理",
+    icon: Waypoints,
+    subtitle: "稳定入口 → SSH 反向转发 → 远端出口验证。",
+    steps: [
+      [
+        "先让 Mac 代理可用",
+        "选择上游并启动稳定入口 127.0.0.1:18080，或使用已验证的本地 HTTP 代理端口。",
+      ],
+      [
+        "新建反向隧道",
+        "选择 Coder / CCI 的 SSH 别名；方向选远端 -R；远端监听 10073，目标 127.0.0.1:18080。沿用 Config 时不重复追加 -R。",
+      ],
+      [
+        "启动并看实际结果",
+        "预览后确认。NetDeck 等待 SSH 认证与转发初始化；端口被占用时请更换端口或检查已有会话。",
+      ],
+      [
+        "验证远端并设置当前 Shell",
+        "隧道卡片里点击“远端出口验证”。验证通过后，在远端终端执行 HTTP_PROXY / HTTPS_PROXY 设置，再启动 Codex 或 Git。",
+      ],
+    ],
+  },
+];
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export default function App() {
-  const [page, setPage] = useState<Page>("overview");
+  const [page, setPage] = useState<Page>("dashboard");
   const [config, setConfig] = useState<Config>(defaultConfig);
-  const [configReady, setConfigReady] = useState(false);
+  const [ready, setReady] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [results, setResults] = useState<Diagnostic[]>([]);
-  const [history, setHistory] = useState<Diagnostic[]>([]);
-  const [loading, setLoading] = useState(native);
-  const [running, setRunning] = useState(false);
+  const [runtime, setRuntime] = useState<RuntimeItem[]>([]);
+  const [receipts, setReceipts] = useState<Receipt[]>([]);
+  const [services, setServices] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
   const [error, setError] = useState("");
-  const [toast, setToast] = useState("");
-  const [filter, setFilter] = useState("");
-  const [inspector, setInspector] = useState<{
+  const [notice, setNotice] = useState("");
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [tunnel, setTunnel] = useState<TunnelDefinition | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
+  const [detail, setDetail] = useState<{
     title: string;
-    detail: unknown;
+    value: unknown;
   } | null>(null);
-  const [editing, setEditing] = useState<Profile | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Profile | null>(null);
-  const [tick, setTick] = useState(0);
-  const fetching = useRef(false);
-  const busy = useRef(false);
-  const configRef = useRef(config);
-  configRef.current = config;
-  const notify = useCallback((s: string) => setToast(s), []);
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(""), 7000);
-    return () => clearTimeout(t);
-  }, [toast]);
+  const [evidence, setEvidence] = useState<Diagnostic | null>(null);
+  const [scene, setScene] = useState("daily");
+  const [service, setService] = useState("");
+  const [protocol, setProtocol] = useState("webproxy");
+  const [proxyHost, setProxyHost] = useState("127.0.0.1");
+  const [proxyPort, setProxyPort] = useState(18080);
+  const [exitNode, setExitNode] = useState("");
+  const [testUrl, setTestUrl] = useState("https://example.com/");
+  const [workflow, setWorkflow] = useState<Workflow>({
+    id: "daily",
+    label: "日常检查",
+    profileIds: [],
+  });
+  const refreshLock = useRef(false);
+  const checkLock = useRef(false);
   const refresh = useCallback(async () => {
-    if (!native || fetching.current) return;
-    fetching.current = true;
-    setLoading(true);
+    if (!native || refreshLock.current) return;
+    refreshLock.current = true;
     try {
-      setSnapshot(await api.snapshot());
-      setError("");
+      const [s, r, o] = await Promise.all([
+        api.snapshot(),
+        api.runtime(),
+        api.operations(),
+      ]);
+      setSnapshot(s);
+      setRuntime(r);
+      setReceipts(o);
     } catch (e) {
       setError(errorText(e));
     } finally {
-      fetching.current = false;
-      setLoading(false);
+      refreshLock.current = false;
     }
   }, []);
   useEffect(() => {
-    if (!native) {
-      setLoading(false);
-      return;
-    }
-    void refresh();
-    void api
+    if (!native) return;
+    let alive = true;
+    api
       .config()
       .then((c) => {
-        setConfig(c);
-        setConfigReady(true);
+        if (alive) {
+          setConfig(c);
+          setReady(true);
+        }
       })
       .catch((e) => setError(errorText(e)));
-    void api
+    api
       .history()
-      .then(setHistory)
+      .then((h) => {
+        if (alive) setResults(h);
+      })
       .catch((e) => setError(errorText(e)));
+    api
+      .services()
+      .then((s) => {
+        if (alive) {
+          setServices(s);
+          setService(s[0] ?? "");
+        }
+      })
+      .catch((e) => setError(errorText(e)));
+    void refresh();
+    return () => {
+      alive = false;
+    };
   }, [refresh]);
   useEffect(() => {
-    document.documentElement.dataset.theme = config.preferences.theme;
-  }, [config.preferences.theme]);
-  useEffect(() => {
-    const t = setInterval(
+    const timer = setInterval(
       () => void refresh(),
       config.preferences.refreshSeconds * 1000,
     );
-    return () => clearInterval(t);
+    return () => clearInterval(timer);
   }, [refresh, config.preferences.refreshSeconds]);
   useEffect(() => {
-    const t = setInterval(() => setTick((t) => t + 1), 10000);
-    return () => clearInterval(t);
-  }, []);
-  const diagnose = useCallback(
-    async (id?: string) => {
-      if (busy.current || !native) return;
-      busy.current = true;
-      setRunning(true);
-      setError("");
-      setPage("diagnostics");
-      try {
-        const next = await api.diagnose(id);
-        setResults((old) => [
-          ...old.filter((r) => !next.some((n) => n.profileId === r.profileId)),
-          ...next,
-        ]);
-        setSelected(next[0]?.profileId ?? null);
-        setHistory(await api.history());
-        notify(
-          next.some((r) => r.cancelled)
-            ? "已取消，保留完成的逐跳结果"
-            : `已完成 ${next.length} 条连接诊断`,
-        );
-      } catch (e) {
-        setError(errorText(e));
-      } finally {
-        busy.current = false;
-        setRunning(false);
-      }
-    },
-    [notify],
-  );
-  useEffect(() => {
-    if (!config.preferences.autoDiagnose || !configReady) return;
-    const t = setInterval(() => {
-      if (configRef.current.profiles.some((p) => p.enabled)) void diagnose();
-    }, config.preferences.diagnoseSeconds * 1000);
-    return () => clearInterval(t);
-  }, [
-    config.preferences.autoDiagnose,
-    config.preferences.diagnoseSeconds,
-    configReady,
-    diagnose,
-  ]);
+    document.documentElement.dataset.theme = config.preferences.theme;
+  }, [config.preferences.theme]);
   async function save(next: Config) {
     await api.save(next);
     setConfig(next);
+    setNotice("配置已保存。保存配置不会自动连接。");
   }
-  async function saveProfile(p: Profile) {
-    const current = configRef.current;
-    await save({
-      ...current,
-      profiles: [...current.profiles.filter((x) => x.id !== p.id), p],
+  async function diagnose(profileId?: string, workflowId?: string) {
+    if (checkLock.current) return;
+    checkLock.current = true;
+    setChecking(true);
+    setError("");
+    try {
+      const r = workflowId
+        ? await api.workflow(workflowId)
+        : await api.diagnose(profileId);
+      setResults((old) => [...r, ...old].slice(0, 100));
+      if (profileId && r[0]) setEvidence(r[0]);
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      checkLock.current = false;
+      setChecking(false);
+    }
+  }
+  useEffect(() => {
+    if (!ready || !config.preferences.autoDiagnose) return;
+    const timer = setInterval(
+      () => void diagnose(),
+      config.preferences.diagnoseSeconds * 1000,
+    );
+    return () => clearInterval(timer);
+  }, [
+    ready,
+    config.preferences.autoDiagnose,
+    config.preferences.diagnoseSeconds,
+  ]);
+  async function action(fn: () => Promise<unknown>) {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function preview(request: Operation) {
+    await action(async () => setPlan(await api.preview(request)));
+  }
+  async function execute() {
+    if (!plan) return;
+    const id = plan.id;
+    setPlan(null);
+    await action(async () => {
+      const r = await api.execute(id);
+      setNotice(r.success ? r.detail : "");
+      if (!r.success) setError(r.detail);
+      await refresh();
     });
-    setResults((old) => old.filter((r) => r.profileId !== p.id));
-    setEditing(null);
-    notify("连接已保存；检测状态已重置");
   }
-  async function changePreference<K extends keyof Config["preferences"]>(
-    key: K,
-    value: Config["preferences"][K],
-  ) {
-    try {
-      if (native && !configReady)
-        throw new Error("配置尚未成功加载；为保护现有文件，暂不保存偏好。");
-      if (native)
-        await save({
-          ...configRef.current,
-          preferences: { ...configRef.current.preferences, [key]: value },
-        });
-      else
-        setConfig((c) => ({
-          ...c,
-          preferences: { ...c.preferences, [key]: value },
-        }));
-    } catch (e) {
-      setError(errorText(e));
-    }
-  }
-  async function report(action: "copy" | "export") {
-    try {
-      if (action === "copy") {
-        await api.copy(snapshot, results);
-        notify("脱敏报告已复制到剪贴板");
-      } else {
-        const path = await api.export(snapshot, results);
-        notify(`报告已导出：${path.replace(/^\/Users\/[^/]+/, "~")}`);
-      }
-    } catch (e) {
-      setError(errorText(e));
-    }
-  }
-  const inspect = (title: string, detail: unknown) =>
-    setInspector({ title, detail });
+  useEffect(() => {
+    const saved = config.controls.workflows.find((w) => w.id === scene);
+    if (saved) setWorkflow(saved);
+  }, [config.controls.workflows, scene]);
+  const currentResults = results.filter((r) => {
+    const p = config.profiles.find((p) => p.id === r.profileId);
+    return p && r.profileSignature === profileSignature(p);
+  });
+  const latest = (id: string) => currentResults.find((r) => r.profileId === id);
   const enabled = config.profiles.filter((p) => p.enabled);
-  const peers = snapshot?.tailscale?.peers ?? [];
-  const currentResults = results.filter((r) => !isStale(r.finishedAt));
-  const issues = currentResults.filter(
-    (r) => r.status === "down" || r.status === "degraded",
-  );
-  const discoveryIssues = snapshot?.evidence.filter((e) => e.errorCode) ?? [];
-  const currentPage = nav.find((n) => n.id === page)!;
-  const available = native && configReady;
-  const selectedResult =
-    results.find((r) => r.profileId === selected) ?? results[0];
-  const staleSnapshot = isStale(
-    snapshot?.capturedAt,
-    Math.max(config.preferences.refreshSeconds * 3, 45),
-  );
-  const internet = currentResults.find(
-    (r) => config.profiles.find((p) => p.id === r.profileId)?.kind === "https",
-  );
-  const proxyEndpoints =
-    snapshot?.systemProxy.endpoints.filter((p) => p.enabled) ?? [];
-  const proxyResult = currentResults.find((r) =>
-    config.profiles.some(
-      (p) =>
-        p.id === r.profileId &&
-        ["http-proxy", "socks5-proxy"].includes(p.kind) &&
-        proxyEndpoints.some((e) => e.host === p.host && e.port === p.port),
-    ),
-  );
-  const stats: [string, string, string, Health, typeof Globe2, unknown][] = [
-    [
-      "Internet",
-      internet?.status === "healthy" ? "已验证" : "未检查",
-      internet?.label ?? "添加 HTTPS 目标以验证出口",
-      internet?.status ?? "unknown",
-      Globe2,
-      internet ??
-        "本机存在默认路由不代表互联网可用。请添加 HTTPS Profile，并启用后发起诊断。",
-    ],
-    [
-      "Local Proxy",
-      `${proxyEndpoints.length} 个配置`,
-      proxyResult ? "最近代理诊断结果" : "系统配置 ≠ 实际可用",
-      proxyResult?.status ?? "unknown",
-      Shield,
-      {
-        system: snapshot?.systemProxy,
-        shell: snapshot?.shellProxy,
-        diagnostic: proxyResult,
+  const usable = native && ready && !busy;
+  const selectedScene = scenes.find((s) => s.id === scene)!;
+  const openScenario = (id: string) => {
+    setScene(id);
+    setPage("scenarios");
+    const existing = config.controls.workflows.find((w) => w.id === id);
+    setWorkflow(
+      existing ?? {
+        id,
+        label: scenes.find((s) => s.id === id)!.title,
+        profileIds: [],
       },
-    ],
-    [
-      "Tailscale",
-      snapshot?.tailscale?.state === "Running"
-        ? "运行中"
-        : (snapshot?.tailscale?.state ?? "不可用"),
-      `${peers.length} 个已知设备 · 连通性待验证`,
-      snapshot?.tailscale?.state === "Running" && !staleSnapshot
-        ? "healthy"
-        : "unknown",
-      Network,
-      snapshot?.tailscale ??
-        snapshot?.evidence.find((e) => e.check === "tailscale"),
-    ],
-    [
-      "SSH Profiles",
-      `${snapshot?.sshAliases.length ?? 0} 个别名`,
-      "配置已发现 · 未建立连接",
-      "unknown",
-      Terminal,
-      {
-        aliases: snapshot?.sshAliases,
-        evidence: snapshot?.evidence.find((e) => e.check === "ssh-config"),
-      },
-    ],
-  ];
+    );
+  };
+  const startTunnel = (t: TunnelDefinition) => {
+    const { label: _, ...rest } = t;
+    void preview({ kind: "tunnel-start", ...rest });
+  };
+  const gatewayStart = () =>
+    void preview({
+      kind: "gateway-start",
+      profileId: config.controls.gatewayProfileId,
+      port: config.controls.gatewayPort,
+    });
+  const newTunnel = () =>
+    setTunnel({
+      id: crypto.randomUUID(),
+      label: "远端代理",
+      alias:
+        config.profiles.find((p) => p.kind === "ssh")?.sshAlias ??
+        snapshot?.sshAliases[0] ??
+        "",
+      direction: "remote",
+      listenPort: 10073,
+      targetHost: "127.0.0.1",
+      targetPort: config.controls.gatewayPort,
+      reuseConfig: false,
+    });
+  const endpoint = (p: Profile) =>
+    p.kind === "ssh"
+      ? p.sshAlias
+      : p.kind === "https"
+        ? p.testUrl
+        : `${p.host}:${p.port}`;
+  const copyShell = async (port: number) => {
+    await navigator.clipboard.writeText(
+      `export HTTP_PROXY=http://127.0.0.1:${port}\nexport HTTPS_PROXY=http://127.0.0.1:${port}\nexport http_proxy="$HTTP_PROXY"\nexport https_proxy="$HTTPS_PROXY"`,
+    );
+    setNotice(
+      "已复制当前 Shell 的代理设置。撤销：unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy",
+    );
+  };
   return (
-    <div className="app-shell" data-tick={tick}>
+    <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">
+          <span className="brand-mark">
             <Waypoints size={23} />
-          </div>
-          <div>
-            <strong>
-              NetDeck<span>·</span>
-            </strong>
-            <small>NETWORK CONTROL CENTER</small>
-          </div>
-        </div>
-        <div className="workspace">
-          <span className="workspace-icon">
-            <Monitor size={17} />
           </span>
           <div>
-            <strong>个人工作空间</strong>
-            <small>Local-first · macOS</small>
+            NetDeck<small>你的连接工作台</small>
           </div>
-          <span className="workspace-dot" />
         </div>
-        <span className="nav-caption">工作台</span>
         <nav>
-          {nav.map((n) => (
+          {(
+            [
+              { id: "dashboard", label: "主面板", icon: LayoutDashboard },
+              { id: "scenarios", label: "按场景处理", icon: Waypoints },
+              { id: "settings", label: "配置与记录", icon: Settings2 },
+            ] as const
+          ).map((n) => (
             <button
               key={n.id}
-              aria-label={n.label}
-              className={`nav-item ${page === n.id ? "active" : ""}`}
+              className={page === n.id ? "nav-item active" : "nav-item"}
               onClick={() => setPage(n.id)}
             >
               <n.icon size={18} />
-              <span>{n.label}</span>
-              {n.id === "connections" && config.profiles.length > 0 && (
-                <small>{config.profiles.length}</small>
-              )}
-              {n.id === "diagnostics" && issues.length > 0 && (
-                <small className="attention-count">{issues.length}</small>
-              )}
+              {n.label}
+              <ChevronRight size={14} />
             </button>
           ))}
         </nav>
-        <div className="sidebar-bottom">
-          <div className="safe-mode">
-            <Shield size={17} />
-            <div>
-              <strong>只读诊断模式</strong>
-              <small>你的网络，由你掌控</small>
-            </div>
-          </div>
-          <div className="sidebar-footer">
-            <span>
-              NetDeck <b>0.1</b>
-            </span>
-            <button
-              aria-label="切换主题"
-              onClick={() =>
-                void changePreference(
-                  "theme",
-                  config.preferences.theme === "dark" ? "light" : "dark",
-                )
-              }
-            >
-              {config.preferences.theme === "dark" ? (
-                <Sun size={16} />
-              ) : (
-                <Moon size={16} />
-              )}
-            </button>
-          </div>
+        <div className="sidebar-note">
+          <span className="live-dot" />
+          本地运行 · 明确确认
+          <small>
+            连接与检查各自独立。
+            <br />
+            关闭应用会停止自建隧道与网关；系统设置可在记录里撤销。
+          </small>
         </div>
       </aside>
-      <div className="main-shell">
-        <header className="topbar">
-          <div className="breadcrumb">
-            <span>工作台</span>
-            <ChevronRight size={13} />
-            <strong>{currentPage.label}</strong>
-          </div>
-          <div className="topbar-right">
-            <span
-              className={`live-indicator ${snapshot && !staleSnapshot ? "connected" : ""}`}
-            >
-              <i />
-              {native ? "本机连接" : "浏览器预览"}
-            </span>
-            <span className="topbar-divider" />
-            <button
-              className="icon-button"
-              aria-label="刷新本机状态"
+      <main>
+        <header>
+          <span className="breadcrumb">
+            工作台 /{" "}
+            {page === "dashboard"
+              ? "主面板"
+              : page === "scenarios"
+                ? "按场景处理"
+                : "配置与记录"}
+          </span>
+          <div className="row">
+            <span className="muted">{clockTime(snapshot?.capturedAt)}</span>
+            <Button
+              variant="ghost"
+              disabled={!native || busy}
               onClick={() => void refresh()}
-              disabled={!native || loading}
+              aria-label="刷新本机状态"
             >
-              <RefreshCw size={16} className={loading ? "spin" : ""} />
-            </button>
-            <span className="timestamp">
-              {loading ? "正在发现…" : clockTime(snapshot?.capturedAt)}
-              {staleSnapshot ? " · 已过期" : ""}
-            </span>
+              <RefreshCw size={16} />
+            </Button>
+            <Button
+              disabled={!usable || checking || !enabled.length}
+              onClick={() => void diagnose()}
+            >
+              {checking ? "检查中…" : "检查全部连接"}
+            </Button>
+            {checking && (
+              <Button
+                variant="secondary"
+                onClick={() => void action(api.cancel)}
+              >
+                取消检查
+              </Button>
+            )}
           </div>
         </header>
-        <main>
-          <section className="page-heading">
-            <div>
-              <div className="eyebrow">
-                {currentPage.en.toUpperCase()} <span>/ 个人网络控制中心</span>
-              </div>
-              <h1>{pageCopy[page][0]}</h1>
-              <p>{pageCopy[page][1]}</p>
-            </div>
-            <div className="heading-actions">
-              {running ? (
-                <Button
-                  variant="secondary"
-                  onClick={() =>
-                    void api.cancel().catch((e) => setError(errorText(e)))
-                  }
-                >
-                  <Square size={14} />
-                  取消诊断
-                </Button>
-              ) : (
-                <Button
-                  onClick={() => void diagnose()}
-                  disabled={!available || enabled.length === 0}
-                >
-                  <Activity size={16} />
-                  诊断全部
-                  <span className="button-counter">{enabled.length}</span>
-                </Button>
-              )}
-            </div>
-          </section>
+        <div className="content">
           {!native && (
             <div className="notice">
-              <CircleHelp size={17} />
-              <span>
-                <strong>原生后端未连接。</strong> 当前仅预览界面；通过{" "}
-                <code>npm run tauri dev</code> 打开桌面应用后可获取真实状态。
-              </span>
+              原生后端未连接。浏览器仅展示界面；请运行 NetDeck
+              桌面应用进行检测与操作。
             </div>
           )}
           {error && (
             <div role="alert" className="notice error">
-              <CircleHelp size={17} />
-              <span>{error}</span>
-              <button aria-label="关闭错误" onClick={() => setError("")}>
-                <X size={15} />
-              </button>
+              {error}
+              <button onClick={() => setError("")}>关闭</button>
             </div>
           )}
-          {page === "overview" && (
+          {notice && (
+            <div role="status" className="notice success">
+              {notice}
+              <button onClick={() => setNotice("")}>关闭</button>
+            </div>
+          )}
+          {busy && (
+            <div className="notice">
+              正在准备或执行操作，请稍候。SSH 检查最多约 15
+              秒，网关启动前会先验证出口。
+            </div>
+          )}
+          {page === "dashboard" && (
             <>
-              <div className="stats-grid">
-                {stats.map(([label, value, sub, status, Icon, detail]) => (
-                  <button
-                    className="stat-card"
-                    key={label}
-                    onClick={() => inspect(label, detail)}
-                  >
-                    <div className="stat-top">
-                      <span>{label}</span>
-                      <Icon size={18} />
-                    </div>
-                    <div className="stat-value">
-                      {loading && !snapshot ? (
-                        <span className="skeleton">正在读取</span>
-                      ) : (
-                        value
-                      )}
-                    </div>
-                    <div className="stat-bottom">
-                      <span>{sub}</span>
-                      <Status status={status} />
-                    </div>
-                  </button>
-                ))}
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">YOUR NETWORK, AT A GLANCE</span>
+                  <h1>现在，连接是否就绪？</h1>
+                  <p>配置告诉你走哪条路，检测告诉你这条路是否可用。</p>
+                </div>
+                <Button
+                  variant="secondary"
+                  disabled={!usable}
+                  onClick={() => setProfile(freshProfile())}
+                >
+                  <Plus size={16} />
+                  添加连接
+                </Button>
               </div>
-              <div className="overview-grid">
-                <section className="panel map-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <span className="section-icon">
-                        <Waypoints size={17} />
-                      </span>
-                      <h2>连接拓扑</h2>
-                      <span className="tiny-tag">LIVE MAP</span>
-                    </div>
-                    <button
-                      className="text-button"
-                      onClick={() => setPage("map")}
-                    >
-                      展开视图
-                      <ArrowUpRight size={14} />
-                    </button>
+              <div className="summary-grid">
+                <button
+                  className="summary-card"
+                  onClick={() =>
+                    setDetail({ title: "本机网络与代理", value: snapshot })
+                  }
+                >
+                  <Globe2 size={20} />
+                  <small>本机出口</small>
+                  <strong>
+                    {snapshot?.defaultRoute.interface ?? "尚未发现"}
+                  </strong>
+                  <span>
+                    {snapshot
+                      ? `系统代理 ${snapshot.systemProxy.endpoints.filter((p) => p.enabled).length} 项 · PAC ${snapshot.systemProxy.pacEnabled ? "开启" : "关闭"}`
+                      : "等待原生检测"}
+                  </span>
+                </button>
+                <button
+                  className="summary-card"
+                  onClick={() => openScenario("daily")}
+                >
+                  <Shield size={20} />
+                  <small>连接检查</small>
+                  <strong>
+                    {
+                      enabled.filter(
+                        (p) =>
+                          latest(p.id)?.status === "healthy" &&
+                          !isStale(latest(p.id)?.finishedAt),
+                      ).length
+                    }{" "}
+                    / {enabled.length}
+                    <em>已验证</em>
+                  </strong>
+                  <span>超过 2 分钟的检测不计入正常</span>
+                </button>
+                <button
+                  className="summary-card"
+                  onClick={() => openScenario("slai")}
+                >
+                  <Waypoints size={20} />
+                  <small>Tailscale</small>
+                  <strong>{snapshot?.tailscale?.state ?? "未知"}</strong>
+                  <span>
+                    {snapshot?.tailscale
+                      ? `路由接收 ${snapshot.tailscale.acceptRoutes === null ? "未知" : snapshot.tailscale.acceptRoutes ? "开" : "关"} · Exit Node ${snapshot.tailscale.exitNode || "无"}`
+                      : "安装并登录后刷新"}
+                  </span>
+                </button>
+                <button
+                  className="summary-card"
+                  onClick={() => openScenario("remote")}
+                >
+                  <Terminal size={20} />
+                  <small>NetDeck 托管</small>
+                  <strong>
+                    {runtime.filter((r) => r.status === "healthy").length}
+                    <em>状态正常</em>
+                  </strong>
+                  <span>网关与隧道 · 远端出口单独验证</span>
+                </button>
+              </div>
+              <section className="panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>我的连接</h2>
+                    <p>每一项都有配置、实际结果与下一步。</p>
                   </div>
-                  <NetworkMap
-                    snapshot={snapshot}
-                    profiles={config.profiles}
-                    results={results}
-                    onInspect={inspect}
-                    compact
-                  />
-                </section>
-                <section className="panel environments">
-                  <div className="panel-heading">
-                    <div>
-                      <Layers size={17} />
-                      <h2>工作连接</h2>
+                  <Button variant="ghost" onClick={() => setPage("settings")}>
+                    管理配置
+                    <ArrowRight size={15} />
+                  </Button>
+                </div>
+                {!config.profiles.length ? (
+                  <div className="empty">
+                    <div className="empty-icon">
+                      <Plus size={24} />
                     </div>
-                    <button
-                      aria-label="新增连接"
-                      className="icon-button"
-                      disabled={!available}
-                      onClick={() => setEditing(freshProfile())}
+                    <h3>先添加你工作中使用的连接</h3>
+                    <p>
+                      从本机 SSH 别名、实际代理端口或 Tailscale
+                      节点开始。不会自动连接历史地址。
+                    </p>
+                    <Button
+                      disabled={!usable}
+                      onClick={() => setProfile(freshProfile())}
                     >
-                      <Plus size={17} />
-                    </button>
+                      添加第一个连接
+                    </Button>
                   </div>
-                  {config.profiles.length ? (
-                    config.profiles.slice(0, 4).map((p) => {
-                      const r = results.find((r) => r.profileId === p.id);
-                      return (
-                        <button
-                          className="environment-row"
-                          key={p.id}
-                          onClick={() => {
-                            setPage("connections");
-                            setFilter(p.label);
-                          }}
-                        >
-                          <span className="connection-icon">
-                            <Monitor size={18} />
-                          </span>
-                          <span>
-                            <strong>{p.label}</strong>
-                            <small>{kindLabels[p.kind]}</small>
-                          </span>
-                          <Status
-                            status={
-                              p.enabled
-                                ? (r?.status ?? "unknown")
-                                : "not-configured"
-                            }
-                            stale={isStale(r?.finishedAt)}
-                          />
-                        </button>
-                      );
-                    })
-                  ) : (
-                    <div className="empty-state small">
-                      <span className="empty-icon">
-                        <Layers size={26} />
-                      </span>
-                      <h3>从一条连接开始</h3>
-                      <p>
-                        添加代理、SSH 主机或服务，
-                        <br />
-                        构建你的网络工作台。
-                      </p>
+                ) : (
+                  <div className="table-wrap">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>连接 / 配置</th>
+                          <th>实际检查</th>
+                          <th>下一步</th>
+                          <th>操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {config.profiles.map((p) => {
+                          const d = latest(p.id);
+                          const stale = isStale(d?.finishedAt);
+                          const issue = d?.steps.find(
+                            (s) =>
+                              s.status === "down" ||
+                              s.status === "degraded" ||
+                              s.status === "unknown",
+                          );
+                          return (
+                            <tr key={p.id}>
+                              <td>
+                                <strong>{p.label}</strong>
+                                <code>{endpoint(p)}</code>
+                                <small>
+                                  {kindLabels[p.kind]} ·{" "}
+                                  {p.enabled ? "已启用" : "未启用检测"}
+                                </small>
+                              </td>
+                              <td>
+                                <Status
+                                  status={
+                                    p.enabled
+                                      ? (d?.status ?? "unknown")
+                                      : "not-configured"
+                                  }
+                                  stale={stale}
+                                />
+                                <small>{clockTime(d?.finishedAt)}</small>
+                              </td>
+                              <td>
+                                <span className="next-step">
+                                  {!p.enabled
+                                    ? "确认地址，编辑并启用"
+                                    : !d || stale
+                                      ? "运行一次检查，获取当前证据"
+                                      : (issue?.summary ??
+                                        "检查通过；使用时仍以应用响应为准")}
+                                </span>
+                              </td>
+                              <td>
+                                <div className="row">
+                                  <Button
+                                    size="sm"
+                                    variant="secondary"
+                                    disabled={!usable || checking || !p.enabled}
+                                    onClick={() => void diagnose(p.id)}
+                                  >
+                                    检查
+                                  </Button>
+                                  {d && (
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      onClick={() => setEvidence(d)}
+                                    >
+                                      证据
+                                    </Button>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={!usable}
+                                    onClick={() => setProfile(p)}
+                                  >
+                                    编辑
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+              <section>
+                <div className="section-heading">
+                  <div>
+                    <h2>今天要做什么？</h2>
+                    <p>按你的工作顺序处理，不必从零排查。</p>
+                  </div>
+                </div>
+                <div className="scene-grid">
+                  {scenes.map((s) => (
+                    <button
+                      className="scene-card"
+                      key={s.id}
+                      onClick={() => openScenario(s.id)}
+                    >
+                      <s.icon size={20} />
+                      <div>
+                        <strong>{s.title}</strong>
+                        <p>{s.subtitle}</p>
+                      </div>
+                      <ArrowRight size={17} />
+                    </button>
+                  ))}
+                </div>
+              </section>
+              {runtime.length > 0 && (
+                <section className="panel">
+                  <div className="section-heading">
+                    <h2>正在管理的连接</h2>
+                  </div>
+                  {runtime.map((r) => (
+                    <div className="runtime-row" key={r.id}>
+                      <div>
+                        <strong>{r.label}</strong>
+                        <p>{r.detail}</p>
+                      </div>
+                      <Status status={r.status} />
                       <Button
                         variant="secondary"
-                        size="sm"
-                        disabled={!available}
-                        onClick={() => setEditing(freshProfile())}
+                        disabled={!usable}
+                        onClick={() =>
+                          void preview(
+                            r.id === "gateway"
+                              ? { kind: "gateway-stop" }
+                              : { kind: "tunnel-stop", id: r.id },
+                          )
+                        }
                       >
-                        <Plus size={14} />
-                        添加连接
+                        停止…
                       </Button>
                     </div>
-                  )}
-                  <div className="panel-footer">
-                    <button
-                      className="text-button"
-                      onClick={() => setPage("connections")}
-                    >
-                      管理全部连接
-                      <ArrowRight size={14} />
-                    </button>
-                  </div>
+                  ))}
                 </section>
-              </div>
-              <div className="bottom-grid">
-                <section className="panel">
-                  <div className="panel-heading">
-                    <div>
-                      <Activity size={17} />
-                      <h2>需要关注</h2>
-                      <span className="count-badge">
-                        {issues.length + discoveryIssues.length}
-                      </span>
-                    </div>
-                    <span className="muted small-text">基于最近一次检查</span>
-                  </div>
-                  {issues.length + discoveryIssues.length === 0 ? (
-                    <div className="quiet-state">
-                      <div className="quiet-icon">
-                        <Check size={21} />
-                      </div>
-                      <div>
-                        <strong>
-                          {enabled.length ? "暂未记录异常" : "等待更多连接证据"}
-                        </strong>
-                        <p>
-                          {enabled.length
-                            ? "诊断结果将在这里汇总。"
-                            : "完成本机发现后，添加并检测目标以了解链路健康度。"}
-                        </p>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="issues">
-                      {discoveryIssues.map((e) => (
-                        <button
-                          className="issue-row"
-                          key={e.check}
-                          onClick={() => inspect(e.summary, e)}
-                        >
-                          <span className="issue-dot" />
-                          <div>
-                            <strong>{e.summary}</strong>
-                            <small>
-                              {e.check} · {e.errorCode}
-                            </small>
-                          </div>
-                          <ChevronRight size={15} />
-                        </button>
-                      ))}
-                      {issues.map((r) => (
-                        <button
-                          className="issue-row"
-                          key={r.profileId}
-                          onClick={() => {
-                            setSelected(r.profileId);
-                            setPage("diagnostics");
-                          }}
-                        >
-                          <span className={`issue-dot ${r.status}`} />
-                          <div>
-                            <strong>{r.label}</strong>
-                            <small>
-                              {r.steps.find(
-                                (s) =>
-                                  s.status === "down" ||
-                                  s.status === "degraded",
-                              )?.summary ?? "部分步骤尚未验证"}
-                            </small>
-                          </div>
-                          <ChevronRight size={15} />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </section>
-                <section className="panel machine-panel">
-                  <div className="panel-heading">
-                    <div>
-                      <Monitor size={17} />
-                      <h2>本机概况</h2>
-                    </div>
-                    <SourceBadge
-                      source={snapshot ? "observed" : "configured"}
-                    />
-                  </div>
-                  <dl>
-                    <div>
-                      <dt>系统</dt>
-                      <dd>
-                        {snapshot ? `macOS ${snapshot.osVersion}` : "未读取"}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>默认出口</dt>
-                      <dd>{snapshot?.defaultRoute.interface ?? "未读取"}</dd>
-                    </div>
-                    <div>
-                      <dt>监听端口</dt>
-                      <dd>
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            inspect("本机 TCP 监听端口", snapshot?.listeners)
-                          }
-                        >
-                          {snapshot?.listeners.length ?? "—"} 个
-                          <ArrowUpRight size={12} />
-                        </button>
-                      </dd>
-                    </div>
-                    <div>
-                      <dt>系统 / Shell 代理</dt>
-                      <dd>
-                        <button
-                          className="text-button"
-                          onClick={() =>
-                            inspect("代理来源对照", {
-                              system: snapshot?.systemProxy,
-                              shell: snapshot?.shellProxy,
-                              note: "Shell 变量为应用继承的进程环境，可能与另一个终端窗口不同。",
-                            })
-                          }
-                        >
-                          查看对照
-                          <ArrowUpRight size={12} />
-                        </button>
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
-              </div>
-              <div className="page-footnote">
-                <Shield size={12} />
-                本机发现不会修改网络配置。主动检查仅针对你启用的目标。
-                <span>所有时间均为本地时间</span>
-              </div>
-            </>
-          )}
-          {page === "map" && (
-            <section className="panel full-map">
-              <NetworkMap
-                snapshot={snapshot}
-                profiles={config.profiles}
-                results={results}
-                onInspect={inspect}
-              />
-            </section>
-          )}
-          {page === "connections" && (
-            <>
-              <div className="section-toolbar">
-                <div className="search-input">
-                  <Search size={16} />
-                  <input
-                    aria-label="搜索连接"
-                    placeholder="搜索名称、地址或别名…"
-                    value={filter}
-                    onChange={(e) => setFilter(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <Button
-                    variant="secondary"
-                    disabled={!available}
-                    onClick={() => setImporting(true)}
-                  >
-                    <ArrowDownToLine size={15} />
-                    导入历史线索
-                  </Button>
-                  <Button
-                    disabled={!available}
-                    onClick={() => setEditing(freshProfile())}
-                  >
-                    <Plus size={15} />
-                    新增连接
-                  </Button>
-                </div>
-              </div>
-              {config.profiles.length === 0 ? (
-                <section className="panel empty-state">
-                  <span className="empty-icon">
-                    <Layers size={31} />
+              )}
+              <details className="panel">
+                <summary>
+                  本机发现与网络拓扑{" "}
+                  <span className="muted">
+                    查看代理、监听端口、Tailscale 节点和检测证据
                   </span>
-                  <h2>让你的连接有一个家</h2>
-                  <p>
-                    从已知的代理或 SSH 别名开始。
-                    <br />
-                    历史地址需确认，启用之后才会发起检测。
-                  </p>
-                  <Button
-                    disabled={!available}
-                    onClick={() => setEditing(freshProfile())}
-                  >
-                    <Plus size={16} />
-                    添加第一个连接
-                  </Button>
-                  {!!snapshot?.sshAliases.length && (
-                    <div className="discovered-aliases">
-                      <span>发现的 SSH 别名</span>
-                      {snapshot.sshAliases.slice(0, 8).map((a) => (
-                        <button
-                          key={a}
+                </summary>
+                <div className="discovery-grid">
+                  <div>
+                    <h3>系统代理</h3>
+                    {snapshot?.systemProxy.endpoints.map((p, i) => (
+                      <p key={i}>
+                        <code>
+                          {p.protocol} {p.host}:{p.port}
+                        </code>{" "}
+                        · {p.enabled ? "已开启" : "已关闭"}
+                      </p>
+                    ))}
+                    <h3>当前应用继承的 Shell 代理</h3>
+                    <pre>
+                      {JSON.stringify(snapshot?.shellProxy ?? {}, null, 2)}
+                    </pre>
+                    <small>桌面应用无法读取其他终端后续修改的环境变量。</small>
+                  </div>
+                  <div>
+                    <h3>Tailscale 节点</h3>
+                    {snapshot?.tailscale?.peers.map((p) => (
+                      <div className="peer" key={p.name}>
+                        <strong>{p.name}</strong>
+                        <small>
+                          {p.ips.join(", ")} ·{" "}
+                          {p.online ? "在线记录，尚需 ping" : "离线记录"}
+                        </small>
+                        <small>宣告路由：{p.routes.join(", ") || "无"}</small>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={!usable}
                           onClick={() =>
-                            setEditing({
+                            setProfile({
                               ...freshProfile(),
-                              label: a,
-                              kind: "ssh",
-                              sshAlias: a,
+                              label: p.name,
+                              kind: "tailscale",
+                              host: p.ips[0] ?? "",
                               port: 22,
                             })
                           }
                         >
-                          <Terminal size={13} />
-                          {a}
-                          <Plus size={12} />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </section>
-              ) : (
-                <div className="connections-grid">
-                  {config.profiles
-                    .filter((p) =>
-                      `${p.label} ${p.host} ${p.sshAlias}`
-                        .toLowerCase()
-                        .includes(filter.toLowerCase()),
-                    )
-                    .map((p) => {
-                      const r = results.find((r) => r.profileId === p.id);
-                      return (
-                        <section className="panel connection-card" key={p.id}>
-                          <div className="connection-card-top">
-                            <span className="connection-icon">
-                              <Monitor size={20} />
-                            </span>
-                            <SourceBadge source={p.source} />
-                          </div>
-                          <h2>{p.label}</h2>
-                          <p className="mono endpoint">
-                            {p.sshAlias || `${p.host}:${p.port}`}
-                          </p>
-                          <div className="connection-meta">
-                            <span>{kindLabels[p.kind]}</span>
-                            <Status
-                              status={
-                                p.enabled
-                                  ? (r?.status ?? "unknown")
-                                  : "not-configured"
-                              }
-                              stale={isStale(r?.finishedAt)}
-                            />
-                          </div>
-                          <div className="connection-date">
-                            <Clock3 size={12} />
-                            {clockTime(r?.finishedAt)}
-                          </div>
-                          <div className="connection-actions">
-                            <Button
-                              variant="secondary"
-                              size="sm"
-                              disabled={!p.enabled || running}
-                              onClick={() => void diagnose(p.id)}
-                            >
-                              <Activity size={14} />
-                              诊断
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => setEditing(p)}
-                            >
-                              <SlidersHorizontal size={14} />
-                              编辑
-                            </Button>
-                            <button
-                              className="icon-button delete"
-                              aria-label={`删除 ${p.label}`}
-                              onClick={() => setDeleteTarget(p)}
-                            >
-                              <Trash2 size={15} />
-                            </button>
-                          </div>
-                        </section>
-                      );
-                    })}
-                </div>
-              )}
-            </>
-          )}
-          {page === "diagnostics" && (
-            <>
-              {running && (
-                <div className="diagnosing">
-                  <Loader2 size={19} className="spin" />
-                  <div>
-                    <strong>正在逐跳检查…</strong>
-                    <span>
-                      最多 3 条连接并发 · 单步超时 · 总任务 120 秒上限
-                    </span>
-                  </div>
-                  <div className="scan-bars">
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                    <i />
-                  </div>
-                </div>
-              )}
-              {results.length ? (
-                <div className="diagnostic-layout">
-                  <aside className="panel result-list">
-                    <div className="panel-heading">
-                      <h2>连接结果</h2>
-                      <span className="count-badge">{results.length}</span>
-                    </div>
-                    {results.map((r) => (
-                      <button
-                        className={`result-row ${selectedResult?.profileId === r.profileId ? "selected" : ""}`}
-                        key={r.profileId}
-                        onClick={() => setSelected(r.profileId)}
-                      >
-                        <strong>{r.label}</strong>
-                        <div>
-                          <Status
-                            status={r.status}
-                            stale={isStale(r.finishedAt)}
-                          />
-                          <small>{clockTime(r.finishedAt)}</small>
-                        </div>
-                      </button>
-                    ))}
-                  </aside>
-                  {selectedResult && (
-                    <section className="panel diagnostic-detail">
-                      <div className="panel-heading">
-                        <div>
-                          <h2>{selectedResult.label}</h2>
-                          <Status
-                            status={selectedResult.status}
-                            stale={isStale(selectedResult.finishedAt)}
-                          />
-                        </div>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => void report("copy")}
-                        >
-                          <Copy size={14} />
-                          复制报告
+                          添加为检查目标
                         </Button>
                       </div>
-                      <div className="diagnostic-caption">
-                        <span>
-                          {selectedResult.cancelled
-                            ? "已取消 · 已完成步骤仍可查看"
-                            : "逐跳证据"}
-                        </span>
-                        <span>
-                          {clockTime(selectedResult.startedAt)} →{" "}
-                          {clockTime(selectedResult.finishedAt)}
-                        </span>
-                      </div>
-                      <EvidenceList steps={selectedResult.steps} />
-                    </section>
-                  )}
+                    ))}
+                  </div>
                 </div>
-              ) : (
-                <section className="panel empty-state">
-                  <span className="empty-icon">
-                    <Activity size={32} />
-                  </span>
-                  <h2>{running ? "正在收集连接证据" : "每个结论，都有依据"}</h2>
-                  <p>
-                    选择已启用的连接，或运行「诊断全部」。
-                    <br />
-                    结果会按配置 → DNS → 路由 → TCP → 服务展开。
-                  </p>
-                  {enabled.length === 0 && (
-                    <Button
-                      variant="secondary"
-                      onClick={() => setPage("connections")}
-                    >
-                      配置连接
-                      <ArrowRight size={14} />
-                    </Button>
-                  )}
-                </section>
-              )}
+                <EvidenceList steps={snapshot?.evidence ?? []} />
+                <div className="map-container">
+                  <Suspense fallback={<p className="muted">加载网络拓扑…</p>}>
+                    <NetworkMap
+                      snapshot={snapshot}
+                      profiles={config.profiles}
+                      results={currentResults}
+                      onInspect={(title, value) => setDetail({ title, value })}
+                    />
+                  </Suspense>
+                </div>
+              </details>
             </>
           )}
-          {page === "tunnels" && (
+          {page === "scenarios" && (
             <>
-              <div className="notice">
-                <GitBranch size={17} />
-                <span>
-                  首版只读检查 SSH
-                  配置与转发风险。启动、停止隧道将在后续版本提供。
-                </span>
-              </div>
-              <section className="panel">
-                <div className="panel-heading">
-                  <div>
-                    <Terminal size={17} />
-                    <h2>已配置的 SSH 主机</h2>
-                  </div>
-                  <span className="tiny-tag">READ ONLY</span>
-                </div>
-                {config.profiles.filter((p) => p.kind === "ssh").length ? (
-                  config.profiles
-                    .filter((p) => p.kind === "ssh")
-                    .map((p) => {
-                      const r = results.find((r) => r.profileId === p.id);
-                      const e = r?.steps.find((s) => s.check === "ssh-config");
-                      return (
-                        <div className="tunnel-row" key={p.id}>
-                          <Terminal size={20} />
-                          <div>
-                            <strong>{p.label}</strong>
-                            <small>{p.sshAlias}</small>
-                          </div>
-                          <span>{e?.summary ?? "等待读取生效配置"}</span>
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            disabled={!p.enabled || running}
-                            onClick={() => void diagnose(p.id)}
-                          >
-                            检查配置
-                          </Button>
-                          {e && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => inspect("SSH 有效转发规则", e)}
-                            >
-                              查看规则
-                            </Button>
-                          )}
-                        </div>
-                      );
-                    })
-                ) : (
-                  <div className="empty-state">
-                    <GitBranch size={32} />
-                    <h3>还没有 SSH Profile</h3>
-                    <p>
-                      添加已发现的 SSH 别名后，可检查有效转发与重复端口风险。
-                    </p>
-                    <Button
-                      variant="secondary"
-                      onClick={() => setPage("connections")}
-                    >
-                      前往连接管理
-                    </Button>
-                  </div>
-                )}
-              </section>
-            </>
-          )}
-          {page === "activity" && (
-            <>
-              <div className="section-toolbar">
-                <span className="muted">
-                  最近 {history.length} 条诊断 · 本机滚动日志
-                </span>
+              <div className="page-heading">
                 <div>
-                  <Button
-                    variant="secondary"
-                    disabled={!native || !snapshot}
-                    onClick={() => void report("copy")}
-                  >
-                    <Copy size={15} />
-                    复制当前报告
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    disabled={!native || !snapshot}
-                    onClick={() => void report("export")}
-                  >
-                    <ArrowDownToLine size={15} />
-                    导出 JSON
-                  </Button>
+                  <span className="eyebrow">A CLEAR NEXT STEP</span>
+                  <h1>从你要做的事开始。</h1>
+                  <p>先检查前置条件，再连接，最后验证实际出口。</p>
                 </div>
               </div>
+              <div className="scene-tabs">
+                {scenes.map((s) => (
+                  <button
+                    className={scene === s.id ? "selected" : ""}
+                    key={s.id}
+                    onClick={() => openScenario(s.id)}
+                  >
+                    {s.title}
+                  </button>
+                ))}
+              </div>
+              <section className="panel guide">
+                <div className="section-heading">
+                  <div>
+                    <h2>{selectedScene.title}</h2>
+                    <p>{selectedScene.subtitle}</p>
+                  </div>
+                  <selectedScene.icon size={26} />
+                </div>
+                <div className="guide-steps">
+                  {selectedScene.steps.map(([title, description], i) => (
+                    <div className="guide-step" key={title}>
+                      <span className="step-index">{i + 1}</span>
+                      <div>
+                        <h3>{title}</h3>
+                        <p>{description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
               <section className="panel">
-                {history.length ? (
-                  history.map((r, i) => (
-                    <button
-                      className="activity-row"
-                      key={`${r.finishedAt}-${i}`}
+                <div className="section-heading">
+                  <div>
+                    <h2>这条路径的检查顺序</h2>
+                    <p>
+                      选择已启用连接。按添加顺序检查；前一步未通过时，不请求后续目标。
+                    </p>
+                  </div>
+                  <Button
+                    disabled={
+                      !usable ||
+                      checking ||
+                      !config.controls.workflows.find((w) => w.id === scene)
+                        ?.profileIds.length
+                    }
+                    onClick={() => void diagnose(undefined, scene)}
+                  >
+                    检查已保存路径
+                  </Button>
+                </div>
+                <div className="workflow-path">
+                  {workflow.profileIds.map((id, i) => (
+                    <div className="path-step" key={id}>
+                      <span>{i + 1}</span>
+                      <strong>
+                        {config.profiles.find((p) => p.id === id)?.label ?? id}
+                      </strong>
+                      <Status
+                        status={latest(id)?.status ?? "unknown"}
+                        stale={isStale(latest(id)?.finishedAt)}
+                      />
+                      <button
+                        aria-label={`移除步骤 ${i + 1}`}
+                        onClick={() =>
+                          setWorkflow({
+                            ...workflow,
+                            profileIds: workflow.profileIds.filter(
+                              (x) => x !== id,
+                            ),
+                          })
+                        }
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <div className="row">
+                  <select
+                    aria-label="添加检查步骤"
+                    value=""
+                    onChange={(e) =>
+                      e.target.value &&
+                      setWorkflow({
+                        ...workflow,
+                        profileIds: [...workflow.profileIds, e.target.value],
+                      })
+                    }
+                  >
+                    <option value="">添加一个前置 / 目标连接…</option>
+                    {enabled
+                      .filter((p) => !workflow.profileIds.includes(p.id))
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.label}
+                        </option>
+                      ))}
+                  </select>
+                  <Button
+                    variant="secondary"
+                    disabled={!usable}
+                    onClick={() =>
+                      void action(() =>
+                        save({
+                          ...config,
+                          controls: {
+                            ...config.controls,
+                            workflows: [
+                              ...config.controls.workflows.filter(
+                                (w) => w.id !== scene,
+                              ),
+                              workflow,
+                            ],
+                          },
+                        }),
+                      )
+                    }
+                  >
+                    保存检查顺序
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={!usable}
+                    onClick={() => setProfile(freshProfile())}
+                  >
+                    添加连接
+                  </Button>
+                </div>
+                {workflow.profileIds.map((id) => {
+                  const d = latest(id);
+                  return (
+                    d && (
+                      <details className="workflow-result" key={id}>
+                        <summary>
+                          {d.label} · {healthLabels[d.status]} ·{" "}
+                          {clockTime(d.finishedAt)}
+                        </summary>
+                        <EvidenceList steps={d.steps} />
+                      </details>
+                    )
+                  );
+                })}
+              </section>
+              {(scene === "daily" || scene === "remote") && (
+                <section className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <h2>稳定代理入口</h2>
+                      <p>
+                        仅监听 Mac 的 127.0.0.1；支持 HTTP / SOCKS5
+                        上游，上游不可用时返回失败。
+                      </p>
+                    </div>
+                    <Status
+                      status={
+                        runtime.find((r) => r.id === "gateway")?.status ??
+                        "not-configured"
+                      }
+                    />
+                  </div>
+                  <div className="form-row">
+                    <label>
+                      实际上游代理
+                      <select
+                        value={config.controls.gatewayProfileId}
+                        disabled={!usable}
+                        onChange={(e) =>
+                          void action(() =>
+                            save({
+                              ...config,
+                              controls: {
+                                ...config.controls,
+                                gatewayProfileId: e.target.value,
+                              },
+                            }),
+                          )
+                        }
+                      >
+                        <option value="">选择已启用的代理 Profile</option>
+                        {enabled
+                          .filter(
+                            (p) =>
+                              p.kind === "http-proxy" ||
+                              p.kind === "socks5-proxy",
+                          )
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.label} · {p.host}:{p.port}
+                            </option>
+                          ))}
+                      </select>
+                    </label>
+                    <label>
+                      固定本地端口
+                      <input
+                        type="number"
+                        min={1024}
+                        max={65535}
+                        defaultValue={config.controls.gatewayPort}
+                        key={config.controls.gatewayPort}
+                        disabled={!usable}
+                        onBlur={(e) => {
+                          const port = Number(e.target.value);
+                          if (port !== config.controls.gatewayPort)
+                            void action(() =>
+                              save({
+                                ...config,
+                                controls: {
+                                  ...config.controls,
+                                  gatewayPort: port,
+                                },
+                              }),
+                            );
+                        }}
+                      />
+                    </label>
+                  </div>
+                  <div className="row">
+                    <Button
+                      disabled={!usable || !config.controls.gatewayProfileId}
+                      onClick={gatewayStart}
+                    >
+                      预览启动 / 切换
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={
+                        !usable || !runtime.some((r) => r.id === "gateway")
+                      }
+                      onClick={() => void preview({ kind: "gateway-stop" })}
+                    >
+                      停止…
+                    </Button>
+                    <Button
+                      variant="ghost"
                       onClick={() =>
-                        inspect(`${r.label} · ${clockTime(r.finishedAt)}`, r)
+                        void action(() =>
+                          copyShell(config.controls.gatewayPort),
+                        )
                       }
                     >
-                      <span className="activity-icon">
-                        <Activity size={16} />
-                      </span>
-                      <div>
-                        <strong>{r.label}</strong>
-                        <small>
-                          {new Date(r.finishedAt).toLocaleString("zh-CN")} ·{" "}
-                          {r.steps.length} 个步骤
-                          {r.cancelled ? " · 已取消" : ""}
-                        </small>
-                      </div>
-                      <Status status={r.status} stale={isStale(r.finishedAt)} />
-                      <ChevronRight size={15} />
-                    </button>
-                  ))
-                ) : (
-                  <div className="empty-state">
-                    <Clock3 size={30} />
-                    <h3>还没有诊断记录</h3>
-                    <p>完成一次主动检查后，结果会自动保存在这里。</p>
+                      <Copy size={15} />
+                      复制 Mac Shell 设置
+                    </Button>
                   </div>
-                )}
-              </section>
+                  <p className="hint">
+                    只改当前终端：执行复制的 export 后再启动 CLI。退出该终端或
+                    unset 对应变量即可恢复。稳定入口不自动更改系统代理。
+                  </p>
+                </section>
+              )}
+              {scene === "slai" && (
+                <section className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <h2>Tailscale 本机控制</h2>
+                      <p>
+                        当前 {snapshot?.tailscale?.state ?? "未知"} · 接受路由{" "}
+                        {snapshot?.tailscale?.acceptRoutes === true
+                          ? "开启"
+                          : snapshot?.tailscale?.acceptRoutes === false
+                            ? "关闭"
+                            : "未知"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="row">
+                    <Button
+                      disabled={!usable}
+                      onClick={() =>
+                        void preview({
+                          kind: "tailscale",
+                          setting: "connected",
+                          value: "true",
+                        })
+                      }
+                    >
+                      预览连接
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={!usable}
+                      onClick={() =>
+                        void preview({
+                          kind: "tailscale",
+                          setting: "connected",
+                          value: "false",
+                        })
+                      }
+                    >
+                      预览断开
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={!usable}
+                      onClick={() =>
+                        void preview({
+                          kind: "tailscale",
+                          setting: "accept-routes",
+                          value: snapshot?.tailscale?.acceptRoutes
+                            ? "false"
+                            : "true",
+                        })
+                      }
+                    >
+                      预览{snapshot?.tailscale?.acceptRoutes ? "关闭" : "开启"}
+                      接受路由
+                    </Button>
+                  </div>
+                  <p className="hint">
+                    Tailscale 连接成功不代表研究院服务可达。继续检查
+                    Peer、CIDR、系统路由与共享代理。
+                  </p>
+                </section>
+              )}
+              {(scene === "ssh" || scene === "remote") && (
+                <section className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <h2>SSH 认证与端口转发</h2>
+                      <p>
+                        多个隧道可以并行运行；停止操作只影响 NetDeck
+                        创建的进程。
+                      </p>
+                    </div>
+                    <Button disabled={!usable} onClick={newTunnel}>
+                      <Plus size={16} />
+                      新增隧道
+                    </Button>
+                  </div>
+                  <div className="row wrap">
+                    {enabled
+                      .filter((p) => p.kind === "ssh")
+                      .map((p) => (
+                        <Button
+                          key={p.id}
+                          variant="secondary"
+                          disabled={!usable}
+                          onClick={() =>
+                            void preview({
+                              kind: "ssh-auth",
+                              alias: p.sshAlias,
+                            })
+                          }
+                        >
+                          验证 {p.label} 的 SSH 认证…
+                        </Button>
+                      ))}
+                  </div>
+                  {!config.controls.tunnels.length && (
+                    <p className="empty-inline">
+                      还没有隧道。远端需要使用 Mac 代理时，新增一个远端 -R
+                      转发。
+                    </p>
+                  )}
+                  {config.controls.tunnels.map((t) => {
+                    const r = runtime.find((r) => r.id === t.id);
+                    return (
+                      <article className="tunnel-card" key={t.id}>
+                        <div className="section-heading">
+                          <div>
+                            <h3>{t.label}</h3>
+                            <code>
+                              {t.alias} ·{" "}
+                              {t.reuseConfig
+                                ? "沿用 SSH Config"
+                                : `${t.direction === "remote" ? "远端 -R" : "本地 -L"} 127.0.0.1:${t.listenPort} → ${t.targetHost}:${t.targetPort}`}
+                            </code>
+                          </div>
+                          <Status status={r?.status ?? "not-configured"} />
+                        </div>
+                        <p>{r?.detail ?? "已保存定义，尚未启动。"}</p>
+                        <div className="row wrap">
+                          <Button
+                            disabled={!usable || r?.status === "healthy"}
+                            onClick={() => startTunnel(t)}
+                          >
+                            预览启动
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            disabled={!usable || !r || r.status === "down"}
+                            onClick={() =>
+                              void preview({ kind: "tunnel-stop", id: t.id })
+                            }
+                          >
+                            停止…
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            disabled={!usable}
+                            onClick={() => setTunnel(t)}
+                          >
+                            编辑
+                          </Button>
+                          {t.direction === "remote" && (
+                            <>
+                              <Button
+                                variant="secondary"
+                                disabled={!usable}
+                                onClick={() =>
+                                  void preview({
+                                    kind: "remote-check",
+                                    alias: t.alias,
+                                    port: t.listenPort,
+                                    url: testUrl,
+                                  })
+                                }
+                              >
+                                远端出口验证…
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                onClick={() =>
+                                  void action(() => copyShell(t.listenPort))
+                                }
+                              >
+                                复制远端 Shell 设置
+                              </Button>
+                            </>
+                          )}
+                        </div>
+                        <small>
+                          重新启动：先停止，确认退出后再预览启动。沿用 Config
+                          时，远端出口验证仍使用本定义填写的端口。
+                        </small>
+                      </article>
+                    );
+                  })}
+                  <label>
+                    远端出口验证 URL
+                    <input
+                      type="url"
+                      value={testUrl}
+                      onChange={(e) => setTestUrl(e.target.value)}
+                    />
+                  </label>
+                  <small>
+                    HTTPS、无认证，不跟随重定向。远端必须已安装 curl。
+                  </small>
+                </section>
+              )}
+              <details className="panel">
+                <summary>遇到失败时，下一步怎么做？</summary>
+                <div className="troubleshooting">
+                  <p>
+                    <strong>代理端口变了：</strong>
+                    在主面板的本机发现里查监听端口，更新代理 Profile
+                    并检查三层结果，再切换稳定入口上游。
+                  </p>
+                  <p>
+                    <strong>远端 10073 被占用：</strong>
+                    停止本应用旧隧道，或换用新的远端端口。已有其他终端 SSH
+                    会话请自行确认，NetDeck 不会结束它们。
+                  </p>
+                  <p>
+                    <strong>SSH 认证失败：</strong>先核验目标主机指纹，确认
+                    ssh-agent 中已有授权密钥；含 Match exec
+                    的条件在受控会话中被跳过。
+                  </p>
+                  <p>
+                    <strong>换 Wi-Fi 后不通：</strong>刷新本机出口 → 检查
+                    Tailscale → 检查上游代理 → 重新检查
+                    SSH。按路径逐项处理，不盲目重连全部。
+                  </p>
+                  <p>
+                    <strong>改设置后更糟：</strong>
+                    到“配置与记录”选择最近操作的“预览撤销”。如果外部客户端已更改同一设置，先核对当前值再处理。
+                  </p>
+                </div>
+              </details>
             </>
           )}
           {page === "settings" && (
-            <div className="settings-grid">
-              <section className="panel settings-panel">
-                <div className="panel-heading">
-                  <div>
-                    <Settings2 size={17} />
-                    <h2>应用偏好</h2>
-                  </div>
+            <>
+              <div className="page-heading">
+                <div>
+                  <span className="eyebrow">CONFIGURATION & HISTORY</span>
+                  <h1>配置清楚，每一步可追溯。</h1>
+                  <p>所有设置保存在本机。系统变更先预览，执行后检查。</p>
                 </div>
-                <div className="setting-row">
+              </div>
+              <section className="panel">
+                <div className="section-heading">
                   <div>
-                    <strong>界面主题</strong>
-                    <small>选择适合当前环境的外观</small>
+                    <h2>连接配置</h2>
+                    <p>地址来自你的确认；历史样例默认不启用。</p>
                   </div>
-                  <div className="segmented">
-                    <button
-                      className={
-                        config.preferences.theme === "dark" ? "selected" : ""
-                      }
-                      onClick={() => void changePreference("theme", "dark")}
-                    >
-                      <Moon size={14} />
-                      深色
-                    </button>
-                    <button
-                      className={
-                        config.preferences.theme === "light" ? "selected" : ""
-                      }
-                      onClick={() => void changePreference("theme", "light")}
-                    >
-                      <Sun size={14} />
-                      浅色
-                    </button>
-                  </div>
-                </div>
-                <div className="setting-row">
-                  <div>
-                    <strong>本机发现刷新间隔</strong>
-                    <small>仅读取代理、路由、端口及 Tailscale 状态</small>
-                  </div>
-                  <select
-                    disabled={!available}
-                    value={config.preferences.refreshSeconds}
-                    onChange={(e) =>
-                      void changePreference(
-                        "refreshSeconds",
-                        Number(e.target.value),
-                      )
-                    }
-                  >
-                    {[10, 15, 30, 60].map((n) => (
-                      <option key={n} value={n}>
-                        {n} 秒
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="setting-row">
-                  <div>
-                    <strong>定时主动诊断</strong>
-                    <small>仅对已启用 Profile 发送请求；默认关闭</small>
-                  </div>
-                  <input
-                    aria-label="定时主动诊断"
-                    type="checkbox"
-                    className="toggle"
-                    disabled={!available}
-                    checked={config.preferences.autoDiagnose}
-                    onChange={(e) =>
-                      void changePreference("autoDiagnose", e.target.checked)
-                    }
-                  />
-                </div>
-                <div className="setting-row">
-                  <div>
-                    <strong>主动诊断间隔</strong>
-                    <small>已有任务运行时跳过新一轮检查</small>
-                  </div>
-                  <select
-                    disabled={!available}
-                    value={config.preferences.diagnoseSeconds}
-                    onChange={(e) =>
-                      void changePreference(
-                        "diagnoseSeconds",
-                        Number(e.target.value),
-                      )
-                    }
-                  >
-                    {[30, 60, 120, 300].map((n) => (
-                      <option key={n} value={n}>
-                        {n} 秒
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </section>
-              <section className="panel settings-panel">
-                <div className="panel-heading">
-                  <div>
-                    <Shield size={17} />
-                    <h2>数据与边界</h2>
-                  </div>
-                  <span className="tiny-tag">LOCAL ONLY</span>
-                </div>
-                <div className="settings-copy">
-                  <p>配置、诊断日志和导出报告保存在：</p>
-                  <code>~/Library/Application Support/NetDeck/</code>
-                  <p>
-                    报告移除 URL 凭据、查询参数、Token
-                    和个人目录前缀。保留网络地址以便排障，分享前仍可自行审阅。
-                  </p>
-                  <p>
-                    本版不修改系统代理、VPN、Tailscale、SSH 配置或远端服务。
-                  </p>
                   <Button
-                    variant="secondary"
-                    disabled={!native || !snapshot}
-                    onClick={() => void report("export")}
+                    disabled={!usable}
+                    onClick={() => setProfile(freshProfile())}
                   >
-                    <ArrowDownToLine size={15} />
-                    导出当前诊断报告
+                    添加连接
                   </Button>
                 </div>
+                {config.profiles.map((p) => (
+                  <div className="config-row" key={p.id}>
+                    <div>
+                      <strong>{p.label}</strong>
+                      <small>{endpoint(p)}</small>
+                    </div>
+                    <span>{p.enabled ? "启用" : "停用"}</span>
+                    <Button
+                      variant="ghost"
+                      disabled={!usable}
+                      onClick={() => setProfile(p)}
+                    >
+                      编辑
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={!usable}
+                      onClick={() =>
+                        void action(() =>
+                          save({
+                            ...config,
+                            profiles: config.profiles.filter(
+                              (x) => x.id !== p.id,
+                            ),
+                            controls: {
+                              ...config.controls,
+                              workflows: config.controls.workflows.map((w) => ({
+                                ...w,
+                                profileIds: w.profileIds.filter(
+                                  (id) => id !== p.id,
+                                ),
+                              })),
+                              gatewayProfileId:
+                                config.controls.gatewayProfileId === p.id
+                                  ? ""
+                                  : config.controls.gatewayProfileId,
+                            },
+                          }),
+                        )
+                      }
+                    >
+                      删除
+                    </Button>
+                  </div>
+                ))}
+                <details>
+                  <summary>从历史线索建立配置（未验证）</summary>
+                  <div className="row wrap">
+                    {historical.map((p) => (
+                      <Button
+                        key={p.id}
+                        variant="secondary"
+                        disabled={!usable}
+                        onClick={() =>
+                          setProfile({ ...p, id: crypto.randomUUID() })
+                        }
+                      >
+                        {p.label}
+                      </Button>
+                    ))}
+                  </div>
+                </details>
               </section>
-            </div>
+              <section className="panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>显示与检查</h2>
+                    <p>自动检查仅对已启用的目标发起请求。</p>
+                  </div>
+                </div>
+                <div className="form-row">
+                  <label>
+                    主题
+                    <select
+                      value={config.preferences.theme}
+                      disabled={!usable}
+                      onChange={(e) =>
+                        void action(() =>
+                          save({
+                            ...config,
+                            preferences: {
+                              ...config.preferences,
+                              theme: e.target.value as "dark" | "light",
+                            },
+                          }),
+                        )
+                      }
+                    >
+                      <option value="dark">深色</option>
+                      <option value="light">浅色</option>
+                    </select>
+                  </label>
+                  <label>
+                    本机刷新周期（秒）
+                    <input
+                      type="number"
+                      min={10}
+                      max={300}
+                      key={config.preferences.refreshSeconds}
+                      defaultValue={config.preferences.refreshSeconds}
+                      disabled={!usable}
+                      onBlur={(e) => {
+                        if (
+                          Number(e.target.value) !==
+                          config.preferences.refreshSeconds
+                        )
+                          void action(() =>
+                            save({
+                              ...config,
+                              preferences: {
+                                ...config.preferences,
+                                refreshSeconds: Number(e.target.value),
+                              },
+                            }),
+                          );
+                      }}
+                    />
+                  </label>
+                  <label>
+                    主动检测周期（秒）
+                    <input
+                      type="number"
+                      min={30}
+                      max={3600}
+                      key={config.preferences.diagnoseSeconds}
+                      defaultValue={config.preferences.diagnoseSeconds}
+                      disabled={!usable}
+                      onBlur={(e) => {
+                        if (
+                          Number(e.target.value) !==
+                          config.preferences.diagnoseSeconds
+                        )
+                          void action(() =>
+                            save({
+                              ...config,
+                              preferences: {
+                                ...config.preferences,
+                                diagnoseSeconds: Number(e.target.value),
+                              },
+                            }),
+                          );
+                      }}
+                    />
+                  </label>
+                </div>
+                <label className="check-label">
+                  <input
+                    type="checkbox"
+                    disabled={!usable}
+                    checked={config.preferences.autoDiagnose}
+                    onChange={(e) =>
+                      void action(() =>
+                        save({
+                          ...config,
+                          preferences: {
+                            ...config.preferences,
+                            autoDiagnose: e.target.checked,
+                          },
+                        }),
+                      )
+                    }
+                  />
+                  定时主动检查已启用的目标
+                </label>
+              </section>
+              <details className="panel">
+                <summary>
+                  高级控制 · macOS 系统代理 / Tailscale Exit Node
+                </summary>
+                <div className="advanced">
+                  <h3>系统代理</h3>
+                  <p>
+                    一次只修改所选服务的一种代理。HTTP、HTTPS、SOCKS、PAC
+                    与终端环境变量互相独立。
+                  </p>
+                  <div className="form-row">
+                    <label>
+                      网络服务
+                      <select
+                        value={service}
+                        onChange={(e) => setService(e.target.value)}
+                      >
+                        {services.length ? (
+                          services.map((s) => <option key={s}>{s}</option>)
+                        ) : (
+                          <option value="">原生后端读取后可用</option>
+                        )}
+                      </select>
+                    </label>
+                    <label>
+                      代理类型
+                      <select
+                        value={protocol}
+                        onChange={(e) => setProtocol(e.target.value)}
+                      >
+                        <option value="webproxy">HTTP</option>
+                        <option value="securewebproxy">HTTPS</option>
+                        <option value="socksfirewallproxy">SOCKS</option>
+                      </select>
+                    </label>
+                    <label>
+                      主机
+                      <input
+                        value={proxyHost}
+                        onChange={(e) => setProxyHost(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      端口
+                      <input
+                        type="number"
+                        min={1}
+                        max={65535}
+                        value={proxyPort}
+                        onChange={(e) => setProxyPort(Number(e.target.value))}
+                      />
+                    </label>
+                  </div>
+                  <div className="row">
+                    <Button
+                      disabled={!usable || !service}
+                      onClick={() =>
+                        void preview({
+                          kind: "system-proxy",
+                          service,
+                          protocol,
+                          host: proxyHost,
+                          port: proxyPort,
+                          enabled: true,
+                        })
+                      }
+                    >
+                      预览设置代理
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={!usable || !service}
+                      onClick={() =>
+                        void preview({
+                          kind: "system-proxy",
+                          service,
+                          protocol,
+                          host: proxyHost,
+                          port: proxyPort,
+                          enabled: false,
+                        })
+                      }
+                    >
+                      预览关闭代理
+                    </Button>
+                  </div>
+                  <h3>Tailscale Exit Node</h3>
+                  <p>
+                    会改变 Tailscale 出口。通常访问研究院子网只需接受路由，无需
+                    Exit Node。
+                  </p>
+                  <label>
+                    已授权出口节点 IP（留空关闭）
+                    <input
+                      value={exitNode}
+                      onChange={(e) => setExitNode(e.target.value)}
+                      placeholder="100.x.x.x"
+                    />
+                  </label>
+                  <Button
+                    disabled={!usable}
+                    onClick={() =>
+                      void preview({
+                        kind: "tailscale",
+                        setting: "exit-node",
+                        value: exitNode,
+                      })
+                    }
+                  >
+                    预览 Exit Node 变更
+                  </Button>
+                </div>
+              </details>
+              <section className="panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>操作记录</h2>
+                    <p>
+                      系统设置可在状态未被外部更改时撤销。网关和隧道请在场景中停止。
+                    </p>
+                  </div>
+                </div>
+                {!receipts.length ? (
+                  <p className="empty-inline">尚未执行操作。</p>
+                ) : (
+                  receipts.map((r) => (
+                    <div className="receipt" key={r.id}>
+                      <div>
+                        <strong>
+                          {r.success ? <Check size={15} /> : null}
+                          {r.title}
+                        </strong>
+                        <p>{r.detail}</p>
+                        <small>
+                          {new Date(r.at).toLocaleString("zh-CN")} ·{" "}
+                          {r.success ? "验证通过" : "执行失败"}
+                        </small>
+                      </div>
+                      {r.reversible && (
+                        <Button
+                          variant="secondary"
+                          disabled={!usable}
+                          onClick={() =>
+                            void preview({ kind: "rollback", id: r.id })
+                          }
+                        >
+                          预览撤销
+                        </Button>
+                      )}
+                    </div>
+                  ))
+                )}
+              </section>
+              <section className="panel">
+                <div className="section-heading">
+                  <div>
+                    <h2>诊断记录与报告</h2>
+                    <p>复制脱敏的发现与诊断信息，可用于继续排障。</p>
+                  </div>
+                  <div className="row">
+                    <Button
+                      variant="secondary"
+                      disabled={!native}
+                      onClick={() =>
+                        void action(async () => {
+                          await api.copy(snapshot, results);
+                          setNotice("诊断报告已复制。");
+                        })
+                      }
+                    >
+                      复制报告
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={!native}
+                      onClick={() =>
+                        void action(async () =>
+                          setNotice(
+                            `报告已保存：${await api.export(snapshot, results)}`,
+                          ),
+                        )
+                      }
+                    >
+                      导出报告
+                    </Button>
+                  </div>
+                </div>
+                {results.slice(0, 15).map((d, i) => (
+                  <button
+                    className="history-row"
+                    key={`${d.profileId}-${i}`}
+                    onClick={() => setEvidence(d)}
+                  >
+                    <span>{d.label}</span>
+                    <Status status={d.status} stale={isStale(d.finishedAt)} />
+                    <small>{clockTime(d.finishedAt)}</small>
+                    <ChevronRight size={15} />
+                  </button>
+                ))}
+              </section>
+            </>
           )}
-        </main>
-      </div>
+          <footer>
+            NetDeck · 本地优先 <span>配置 ≠ 可达 ≠ 应用可用</span>
+          </footer>
+        </div>
+      </main>
       <Sheet
-        open={!!inspector}
-        onClose={() => setInspector(null)}
-        title={inspector?.title ?? "详情"}
-        description="查看本机采集、配置来源与检测证据。"
+        open={!!profile}
+        onClose={() => setProfile(null)}
+        title={profile?.label || "添加连接"}
+        description="确认实际地址后启用检查。SSH 登录与系统变更需要另行预览。"
       >
-        {inspector && <Inspector detail={inspector.detail} />}
-      </Sheet>
-      <Sheet
-        open={!!editing}
-        onClose={() => setEditing(null)}
-        title={
-          config.profiles.some((p) => p.id === editing?.id)
-            ? "编辑连接"
-            : "新增连接"
-        }
-        description="保存目标后，只有明确启用的连接才会参与主动诊断。"
-      >
-        {editing && (
+        {profile && (
           <ProfileForm
-            key={editing.id}
-            initial={editing}
+            key={profile.id}
+            initial={profile}
             aliases={snapshot?.sshAliases ?? []}
-            onSave={saveProfile}
+            onSave={async (p) => {
+              await save({
+                ...config,
+                profiles: [...config.profiles.filter((x) => x.id !== p.id), p],
+              });
+              setProfile(null);
+            }}
           />
         )}
       </Sheet>
       <Sheet
-        open={importing}
-        onClose={() => setImporting(false)}
-        title="导入历史线索"
-        description="这些地址来自历史记录，可能已失效。导入后保持禁用，编辑确认后才能启用。"
+        open={!!tunnel}
+        onClose={() => setTunnel(null)}
+        title="配置 SSH 隧道"
+        description="保存定义不会连接。启动时将显示实际转发策略与影响。"
       >
-        <div className="historical-list">
-          {historical.map((p) => (
-            <div className="historical-item" key={p.id}>
-              <div>
-                <strong>{p.label}</strong>
-                <small>{p.sshAlias || `${p.host}:${p.port}`}</small>
-                <SourceBadge source="historical" />
-              </div>
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={config.profiles.some((x) => x.id === p.id)}
-                onClick={() =>
-                  void saveProfile(p)
-                    .then(() => notify("历史线索已导入，检测保持禁用"))
-                    .catch((e) => setError(errorText(e)))
+        {tunnel && (
+          <form
+            className="profile-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void action(async () => {
+                await save({
+                  ...config,
+                  controls: {
+                    ...config.controls,
+                    tunnels: [
+                      ...config.controls.tunnels.filter(
+                        (t) => t.id !== tunnel.id,
+                      ),
+                      tunnel,
+                    ],
+                  },
+                });
+                setTunnel(null);
+              });
+            }}
+          >
+            <label>
+              名称
+              <input
+                required
+                maxLength={100}
+                value={tunnel.label}
+                onChange={(e) =>
+                  setTunnel({ ...tunnel, label: e.target.value })
+                }
+              />
+            </label>
+            <label>
+              SSH Host 别名
+              <input
+                required
+                list="tunnel-aliases"
+                value={tunnel.alias}
+                onChange={(e) =>
+                  setTunnel({ ...tunnel, alias: e.target.value })
+                }
+              />
+              <datalist id="tunnel-aliases">
+                {snapshot?.sshAliases.map((a) => (
+                  <option key={a} value={a} />
+                ))}
+              </datalist>
+            </label>
+            <label>
+              转发策略
+              <select
+                value={tunnel.reuseConfig ? "reuse" : "override"}
+                onChange={(e) =>
+                  setTunnel({
+                    ...tunnel,
+                    reuseConfig: e.target.value === "reuse",
+                  })
                 }
               >
-                {config.profiles.some((x) => x.id === p.id) ? "已导入" : "导入"}
+                <option value="override">明确覆盖：仅创建下方一条规则</option>
+                <option value="reuse">沿用 SSH Config 的转发规则</option>
+              </select>
+            </label>
+            <label>
+              方向
+              <select
+                value={tunnel.direction}
+                onChange={(e) =>
+                  setTunnel({
+                    ...tunnel,
+                    direction: e.target.value as "remote" | "local",
+                  })
+                }
+              >
+                <option value="remote">远端 -R：让远端使用 Mac 的服务</option>
+                <option value="local">本地 -L：让 Mac 访问远端服务</option>
+              </select>
+            </label>
+            <label>
+              {tunnel.direction === "remote" ? "远端" : "Mac 本地"}监听端口
+              <input
+                required
+                type="number"
+                min={1}
+                max={65535}
+                value={tunnel.listenPort}
+                onChange={(e) =>
+                  setTunnel({ ...tunnel, listenPort: Number(e.target.value) })
+                }
+              />
+            </label>
+            <div className="form-row">
+              <label>
+                目标主机
+                <input
+                  required
+                  value={tunnel.targetHost}
+                  onChange={(e) =>
+                    setTunnel({ ...tunnel, targetHost: e.target.value })
+                  }
+                />
+              </label>
+              <label>
+                目标端口
+                <input
+                  required
+                  type="number"
+                  min={1}
+                  max={65535}
+                  value={tunnel.targetPort}
+                  onChange={(e) =>
+                    setTunnel({ ...tunnel, targetPort: Number(e.target.value) })
+                  }
+                />
+              </label>
+            </div>
+            <p className="hint">
+              {tunnel.reuseConfig
+                ? "沿用时以冻结 Config 中的规则为准。上面的端口用于远端出口验证和 Shell 指令，请填写实际值。"
+                : "监听请求限定 loopback。远端 -R 的目标从 Mac 连接；本地 -L 的目标从服务器连接。"}
+              不修改你的原 SSH 文件。
+            </p>
+            <div className="row">
+              <Button type="submit" disabled={!usable}>
+                保存定义
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={
+                  !usable ||
+                  runtime.some((r) => r.id === tunnel.id && r.status !== "down")
+                }
+                onClick={() =>
+                  void action(async () => {
+                    await save({
+                      ...config,
+                      controls: {
+                        ...config.controls,
+                        tunnels: config.controls.tunnels.filter(
+                          (t) => t.id !== tunnel.id,
+                        ),
+                      },
+                    });
+                    setTunnel(null);
+                  })
+                }
+              >
+                删除定义
               </Button>
             </div>
-          ))}
-        </div>
+          </form>
+        )}
       </Sheet>
       <Sheet
-        open={!!deleteTarget}
-        onClose={() => setDeleteTarget(null)}
-        title="删除连接"
-        description="仅删除 NetDeck 中的 Profile，历史诊断日志仍保留。"
+        open={!!plan}
+        onClose={() => setPlan(null)}
+        title={plan?.title ?? "确认操作"}
+        description="仅预览尚未执行。确认将执行下列操作；预览 5 分钟后失效。"
       >
-        <p>确认删除「{deleteTarget?.label}」？</p>
-        <Button
-          variant="destructive"
-          onClick={() => {
-            if (deleteTarget)
-              void save({
-                ...configRef.current,
-                profiles: configRef.current.profiles.filter(
-                  (p) => p.id !== deleteTarget.id,
-                ),
-              })
-                .then(() => {
-                  setResults((r) =>
-                    r.filter((x) => x.profileId !== deleteTarget.id),
-                  );
-                  setDeleteTarget(null);
-                  notify("连接已删除");
-                })
-                .catch((e) => setError(errorText(e)));
-          }}
-        >
-          <Trash2 size={15} />
-          删除连接
-        </Button>
+        {plan && (
+          <div className="plan">
+            <h3>执行内容</h3>
+            {plan.commands.map((c, i) => (
+              <pre key={i}>{c}</pre>
+            ))}
+            {plan.warnings.map((w) => (
+              <div key={w} className="notice">
+                {w}
+              </div>
+            ))}
+            <h3>如何恢复</h3>
+            <p>{plan.rollback}</p>
+            <div className="row">
+              <Button disabled={busy} onClick={() => void execute()}>
+                确认执行
+              </Button>
+              <Button variant="secondary" onClick={() => setPlan(null)}>
+                取消，保持现状
+              </Button>
+            </div>
+          </div>
+        )}
       </Sheet>
-      {toast && (
-        <div role="status" className="toast">
-          <Check size={17} />
-          <span>{toast}</span>
-          <button aria-label="关闭通知" onClick={() => setToast("")}>
-            <X size={14} />
-          </button>
-        </div>
-      )}
+      <Sheet
+        open={!!evidence}
+        onClose={() => setEvidence(null)}
+        title={evidence?.label ?? "检查证据"}
+        description={`检查时间：${clockTime(evidence?.finishedAt)}。点击每一步查看详情。`}
+      >
+        {evidence && <EvidenceList steps={evidence.steps} />}
+      </Sheet>
+      <Sheet
+        open={!!detail}
+        onClose={() => setDetail(null)}
+        title={detail?.title ?? "详情"}
+      >
+        <pre>{JSON.stringify(detail?.value, null, 2)}</pre>
+      </Sheet>
     </div>
-  );
-}
-function Inspector({ detail }: { detail: unknown }) {
-  if (detail && typeof detail === "object") {
-    const d = detail as { steps?: Evidence[]; check?: string };
-    if (Array.isArray(d.steps)) return <EvidenceList steps={d.steps} />;
-    if (d.check) return <EvidenceList steps={[detail as Evidence]} />;
-  }
-  return (
-    <pre className="inspector-json">
-      {detail === undefined || detail === null
-        ? "尚未获取数据"
-        : typeof detail === "string"
-          ? detail
-          : JSON.stringify(detail, null, 2)}
-    </pre>
   );
 }

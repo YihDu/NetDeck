@@ -235,6 +235,7 @@ fn finish(p: &Profile, started_at: String, steps: Vec<Evidence>, cancelled: bool
     };
     Diagnostic {
         profile_id: p.id.clone(),
+        profile_signature: crate::model::profile_signature(p),
         label: p.label.clone(),
         status,
         started_at,
@@ -259,6 +260,7 @@ pub async fn diagnose(p: &Profile, cancel: &CancellationToken) -> Diagnostic {
         ));
         return Diagnostic {
             profile_id: p.id.clone(),
+            profile_signature: crate::model::profile_signature(p),
             label: p.label.clone(),
             status: Health::NotConfigured,
             started_at,
@@ -511,6 +513,42 @@ pub async fn diagnose_all(profiles: Vec<Profile>, cancel: CancellationToken) -> 
     results.sort_by(|a, b| a.profile_id.cmp(&b.profile_id));
     results
 }
+/// A workflow is an explicit dependency chain. A failed/unknown prerequisite blocks
+/// downstream probes rather than generating a misleading cascade of failures.
+pub async fn diagnose_workflow(
+    profiles: Vec<Profile>,
+    cancel: CancellationToken,
+) -> Vec<Diagnostic> {
+    let mut results = Vec::new();
+    let mut blocker: Option<String> = None;
+    for profile in profiles {
+        let result = if let Some(reason) = &blocker {
+            Diagnostic {
+                profile_id: profile.id.clone(),
+                profile_signature: crate::model::profile_signature(&profile),
+                label: profile.label.clone(),
+                status: Health::Unknown,
+                started_at: crate::model::now(),
+                finished_at: crate::model::now(),
+                cancelled: cancel.is_cancelled(),
+                steps: vec![Evidence::new(
+                    "dependency",
+                    Health::Unknown,
+                    "前置步骤尚未通过",
+                    format!("先处理：{reason}。本步骤未发起网络请求。"),
+                )],
+            }
+        } else {
+            diagnose(&profile, &cancel).await
+        };
+        if result.status != Health::Healthy && blocker.is_none() {
+            blocker = Some(profile.label.clone());
+        }
+        results.push(result);
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,5 +660,32 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(e.code, "cancelled");
+    }
+    #[tokio::test]
+    async fn workflow_blocks_downstream_without_connecting() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut p = Profile {
+            id: "first".into(),
+            label: "first".into(),
+            kind: ProfileKind::Tcp,
+            enabled: false,
+            source: crate::model::Source::Configured,
+            host: "127.0.0.1".into(),
+            port: listener.local_addr().unwrap().port(),
+            ssh_alias: String::new(),
+            test_url: String::new(),
+            expected_cidr: String::new(),
+        };
+        let first = p.clone();
+        p.id = "second".into();
+        p.enabled = true;
+        let results = diagnose_workflow(vec![first, p], CancellationToken::new()).await;
+        assert_eq!(results[1].steps[0].check, "dependency");
+        assert_eq!(results[1].status, Health::Unknown);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), listener.accept())
+                .await
+                .is_err()
+        );
     }
 }

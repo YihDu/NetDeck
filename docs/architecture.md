@@ -1,28 +1,30 @@
-# Architecture
+# Architecture — 0.2
 
 ```text
-React pages / Inspector / React Flow
-                 │ typed Tauri IPC
-src-tauri (application state, cancellation, storage entrypoints)
-                 │
-          netdeck-core  ←  netdeck-cli
-          ├─ model      shared serde types and evidence
-          ├─ discovery  bounded read-only system inventory
-          ├─ command    fixed argv, timeout, kill-on-drop, capped pipes
-          ├─ ssh        safe include flattening and effective config
-          ├─ probe      DNS / route / TCP / proxy / HTTPS
-          ├─ safety     validation, CIDR, redaction
-          └─ storage    versioned config, logs, reports
+React: 主面板 / 场景步骤 / 配置与记录 / Radix Inspector
+                    │ typed IPC (no shell plugin)
+Tauri: configuration mutex, one diagnostic batch, Controller mutex, tray, exit cleanup
+                    │
+netdeck-core ← read-only netdeck CLI
+  model / storage: schema v2, profiles, tunnel definitions, ordered workflows
+  discovery: bounded read-only OS/Tailscale/SSH inventory
+  probe: individual layered checks, ordered prerequisite chain, cancellation
+  ssh: include flattening, static effective config, frozen controlled-session config
+  control: typed preview tokens, frozen requests, owned process groups, settings journal
+  gateway: loopback-only HTTP/CONNECT server, HTTP/SOCKS5 upstream, no direct fallback
+  command / safety: bounded argv execution, validation, privacy
 ```
 
-Rust owns OS and network operations. The WebView has no arbitrary shell plugin, filesystem plugin, or HTTP plugin. Commands expose concrete typed operations. Configuration changes only affect NetDeck's own files.
+The UI has one configuration source. A diagnostic includes a deterministic signature of its exact Profile; current rows and graph accept only matching signatures. Historical results remain available in logs. Results older than 120 seconds are displayed as stale.
 
-Frontend state uses React hooks and a single configuration state; no redundant Zustand/Query stores are introduced. The app keeps last in-memory results visible while a new check runs. Profile edits invalidate corresponding results; previous runs remain in the activity log.
+Default local discovery interval 15 s. Optional active checks have a separate 30–3600 s interval and only probe enabled profiles. Global batches have concurrency 3 and deadline 120 s; ordered workflows stop requesting downstream targets on any non-healthy prerequisite.
 
-Discovery refresh: default 15 s, no active remote probes. Active profiles: manual by default, optional 30–3600 s interval, only enabled profiles. At most three diagnostics run concurrently; command and socket work are bounded. Desktop batches have a 120 s deadline that triggers cancellation and returns partial results. Closing the desktop process drops owned command futures; no detached tunnel processes exist.
+A preview lives in memory for five minutes, capped at 16 pending plans. It captures the frozen SSH configuration, selected upstream and request. Execution consumes the token before any effects. Settings are read again to reject changes since preview; owned runtime generation is checked as well. Controller operations serialize, preventing duplicate starts and settings races within this process.
 
-Evidence is a tuple of result, source, check timestamp, latency, detail and error code. Configured peers/routes are not marked reachable. Frontend changes expired results to a stale badge rather than retaining healthy green. Historical profiles must be confirmed to become configured before enabling.
+Settings recovery snapshots are saved before mutation. Post-state is read and compared, failures attempt restore and readback. Recovery refuses to overwrite an externally changed state. Persisted rollback entries are validated against the same fixed program/argument allow-list; the JSON file is not an arbitrary command runner. OS changes are not a transaction: an abrupt process/machine failure can leave an intermediate external state that requires manual reconciliation.
 
-Native window minimum is 1100×700. Network Map supports zoom, pan, fit, protocol filters, directed edges, node/edge inspection. Compact overview has a topology preview. Content can scroll at small window sizes.
+SSH sessions use an isolated Unix process group; exit cleanup terminates only those owned groups, including inherited ProxyCommand children. Authentication success is distinct from forwarding initialization and remote egress. A temporary config survives as long as the child session. No private-key file content is read by NetDeck.
 
-Package manager is npm on this machine. Workspace binaries have distinct names (`netdeck-desktop`, `netdeck`). Project-local Rust is optional and intentionally excluded from Git.
+The gateway accepts 32 simultaneous clients, headers up to 16 KiB, 8 s setup, 1 h session maximum. HTTP upstream gets absolute-form HTTP requests; SOCKS5 gets an explicit protocol bridge. CONNECT is tunneled through either upstream. Switching the upstream at the same port affects new sessions; changing the listening port first binds the new listener, then shuts down the old one. An unsuccessful upstream check keeps the existing gateway. Health checks recur every 60 s while running. Shutdown cancels all connection tasks.
+
+The menu bar opens the window, reports owned connection health and exits with cleanup. Closing the app does not roll back persistent system settings or install a background service. Minimum window 1100×700, themes via CSS tokens. React Flow remains under expandable discovery details rather than dominating the main dashboard.

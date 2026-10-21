@@ -6,3 +6,5 @@ pub mod safety;
 pub mod ssh;
 pub mod storage;
 pub use tokio_util::sync::CancellationToken;
+pub mod control;
+pub mod gateway;
