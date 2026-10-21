@@ -21,6 +21,7 @@ async function call<T>(
   return invoke<T>(name, args);
 }
 export const api = {
+  discard: (planIds: string[]) => call<void>("discard_operations", { planIds }),
   preview: (request: Operation) => call<Plan>("preview_operation", { request }),
   execute: (planId: string) => call<Receipt>("execute_operation", { planId }),
   runtime: () => call<RuntimeItem[]>("runtime_status"),

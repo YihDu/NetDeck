@@ -169,6 +169,14 @@ async fn copy_report(snapshot: Option<Snapshot>, results: Vec<Diagnostic>) -> Re
     .ok_or("复制失败".into())
 }
 #[tauri::command]
+async fn discard_operations(
+    plan_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.controller.lock().await.discard(&plan_ids);
+    Ok(())
+}
+#[tauri::command]
 async fn preview_operation(
     request: netdeck_core::control::Request,
     state: State<'_, AppState>,
@@ -255,6 +263,7 @@ pub fn run() {
             export_report,
             copy_report,
             preview_operation,
+            discard_operations,
             execute_operation,
             runtime_status,
             operation_history,

@@ -200,6 +200,7 @@ export const historical: Profile[] = [
 ];
 
 export interface TunnelDefinition {
+  route?: "public" | "slai";
   id: string;
   label: string;
   alias: string;
@@ -221,7 +222,7 @@ export interface Controls {
   gatewayPort: number;
 }
 export type Operation =
-  | ({ kind: "tunnel-start" } & Omit<TunnelDefinition, "label">)
+  | ({ kind: "tunnel-start" } & Omit<TunnelDefinition, "label" | "route">)
   | { kind: "tunnel-stop"; id: string }
   | { kind: "ssh-auth"; alias: string }
   | { kind: "remote-check"; alias: string; port: number; url: string }

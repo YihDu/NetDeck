@@ -48,6 +48,9 @@ pub fn validate_config(c: &Config) -> Result<(), String> {
     }
     let mut tunnel_ids = std::collections::BTreeSet::new();
     for t in &c.controls.tunnels {
+        if !["public", "slai"].contains(&t.route.as_str()) {
+            return Err("机器访问路径无效".into());
+        }
         if !crate::safety::valid_alias(&t.id)
             || !crate::safety::valid_alias(&t.alias)
             || !crate::safety::valid_host(&t.target_host)
@@ -160,5 +163,10 @@ mod tests {
         assert_eq!(c.version, 2);
         assert_eq!(c.controls.gateway_port, 18080);
         assert!(c.controls.tunnels.is_empty());
+    }
+    #[test]
+    fn old_tunnel_definitions_default_to_public_route() {
+        let t:TunnelDefinition=serde_json::from_str(r#"{"id":"old","label":"old","alias":"old","direction":"remote","listenPort":10073,"targetHost":"127.0.0.1","targetPort":18080,"reuseConfig":false}"#).unwrap();
+        assert_eq!(t.route, "public");
     }
 }

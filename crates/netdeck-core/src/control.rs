@@ -315,10 +315,15 @@ impl Controller {
             _ => None,
         }
     }
+    pub fn discard(&mut self, ids: &[String]) {
+        for id in ids {
+            self.pending.remove(id);
+        }
+    }
     pub async fn preview(&mut self, request: Request) -> Result<Plan, String> {
         self.pending
             .retain(|_, p| p.at.elapsed() < Duration::from_secs(300));
-        if self.pending.len() >= 16 {
+        if self.pending.len() >= 128 {
             return Err("待确认操作过多，请稍后重试".into());
         }
         self.sequence += 1;
@@ -1206,5 +1211,13 @@ mod tests {
         assert!(validate_change(&c).is_ok());
         c.undo = args(&["-setdnsservers", "Wi-Fi", "1.1.1.1"]);
         assert!(validate_change(&c).is_err());
+    }
+    #[tokio::test]
+    async fn discarded_preview_cannot_execute() {
+        let mut c = Controller::default();
+        let p = c.preview(Request::GatewayStop).await.unwrap();
+        c.discard(std::slice::from_ref(&p.id));
+        assert!(c.execute(&p.id).await.is_err());
+        assert!(c.receipts().is_empty());
     }
 }

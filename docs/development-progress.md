@@ -1,3 +1,15 @@
+# NetDeck 0.3 — daily workflow simplification
+
+User correction: remove documentation-like dashboards from the daily flow. The home screen is now a compact Mac VPN endpoint and a machine list. Add-machine defaults expose only name, SSH alias and public/SLAI path; ports and forwarding strategy are collapsed. Existing diagnostics and configuration remain behind Settings.
+
+Implemented single/multi-machine connection batches using explicit backend previews. After one confirmation: optional Tailscale prerequisites, stable proxy, each SSH reverse tunnel, then each remote egress check. Failure stops the sequence, leaves existing connections visible and available to disconnect, and discards unused plans. Cancellation sends no execute calls. Endpoint changes are not inferred as healthy; verified remote status is separate from SSH state and expires.
+
+Compatibility: older tunnel definitions deserialize to public path. No existing profiles, SSH files or network settings were rewritten during development. Browser E2E fixtures use Mock machine labels; no real remote connections were made.
+
+Validation: 39 Rust core tests, 8 Vitest tests and 7 Chrome flow tests passed; workspace Clippy with `-D warnings` passed. TypeScript/Vite production build passed. The two additional core checks cover cancelled preview tokens and old tunnel-definition compatibility. Screenshots: `test-results/daily-machines-mock.png`, `test-results/daily-connected-mock.png`; both inspected at 1100px width. These are explicitly mocked examples, not evidence of live Coder/CCI connectivity. The 0.3 Apple Silicon application bundle was built successfully (7.53 MiB); final frontend refresh was rebuilt before launch.
+
+---
+
 # NetDeck 0.2 development record — 2026-10-21
 
 User scope: implement controlled networking and a minimal workflow UI; exclude Magpie, Windows remote administration and Transtar internal node switching. Work remains in the independent `Tools/NetDeck` Git repository.

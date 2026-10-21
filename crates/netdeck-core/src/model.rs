@@ -215,6 +215,8 @@ fn default_gateway_port() -> u16 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TunnelDefinition {
+    #[serde(default = "public_route")]
+    pub route: String,
     pub id: String,
     pub label: String,
     pub alias: String,
@@ -257,4 +259,8 @@ pub fn profile_signature(p: &Profile) -> String {
         p.expected_cidr
     ])
     .to_string()
+}
+
+fn public_route() -> String {
+    "public".into()
 }
